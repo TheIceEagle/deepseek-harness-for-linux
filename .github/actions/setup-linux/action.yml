@@ -7,15 +7,20 @@ inputs:
   install-runtime:
     description: Install and prepare the pinned upstream runtime.
     default: "true"
+  build-profile:
+    description: Separate debug-check and release-build Cargo caches.
+    default: "debug"
 runs:
   using: composite
   steps:
     - name: Install system dependencies
       shell: bash
+      env:
+        UBUNTU_VERSION: ${{ inputs.ubuntu }}
       run: |
         sudo apt-get update
         webdriver=webkit2gtk-driver
-        if apt-cache show webkitgtk-webdriver >/dev/null 2>&1; then
+        if [ "$UBUNTU_VERSION" = "26.04" ]; then
           webdriver=webkitgtk-webdriver
         fi
         sudo apt-get install --yes --no-install-recommends \
@@ -44,10 +49,10 @@ runs:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          src-tauri/target
+          src-tauri/target/${{ inputs.build-profile }}
           !src-tauri/target/release/bundle
-        key: cargo-${{ inputs.ubuntu }}-${{ runner.arch }}-1.93.1-${{ hashFiles('src-tauri/Cargo.lock') }}
-        restore-keys: cargo-${{ inputs.ubuntu }}-${{ runner.arch }}-1.93.1-
+        key: cargo-${{ inputs.ubuntu }}-${{ runner.arch }}-1.93.1-${{ inputs.build-profile }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+        restore-keys: cargo-${{ inputs.ubuntu }}-${{ runner.arch }}-1.93.1-${{ inputs.build-profile }}-
     - name: Cache the native desktop test driver
       id: driver-cache
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

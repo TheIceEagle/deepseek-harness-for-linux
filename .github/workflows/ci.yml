@@ -12,10 +12,17 @@ concurrency:
 env:
   CARGO_BUILD_JOBS: "2"
   CARGO_INCREMENTAL: "0"
+  # Keep debug assertions for tests without caching large debugger symbols.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 jobs:
   check:
-    name: Source and recovery checks
-    runs-on: ubuntu-26.04
+    name: Source and recovery checks (Ubuntu ${{ matrix.ubuntu }})
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ["24.04", "26.04"]
+    runs-on: ubuntu-${{ matrix.ubuntu }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -23,7 +30,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-linux
         with:
-          ubuntu: "26.04"
+          ubuntu: ${{ matrix.ubuntu }}
       - name: Check formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - name: Check Clippy
@@ -46,7 +53,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: source-test-reports
+          name: source-test-reports-ubuntu-${{ matrix.ubuntu }}
           path: |
             artifacts/*.json
             artifacts/*.png
@@ -65,6 +72,7 @@ jobs:
       - uses: ./.github/actions/setup-linux
         with:
           ubuntu: "24.04"
+          build-profile: "release"
       - name: Verify package and release versions
         env:
           RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
@@ -102,9 +110,13 @@ jobs:
           compression-level: 0
           retention-days: 1
   installed:
-    name: Check the installed Debian package
+    name: Check the installed Debian package (Ubuntu ${{ matrix.ubuntu }})
     needs: package
-    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ["24.04", "26.04"]
+    runs-on: ubuntu-${{ matrix.ubuntu }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -112,7 +124,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-linux
         with:
-          ubuntu: "26.04"
+          ubuntu: ${{ matrix.ubuntu }}
           install-runtime: "false"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -137,7 +149,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: installed-test-reports
+          name: installed-test-reports-ubuntu-${{ matrix.ubuntu }}
           path: |
             artifacts/*.json
             artifacts/*.png

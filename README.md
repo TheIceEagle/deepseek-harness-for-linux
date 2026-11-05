@@ -9,15 +9,36 @@ The desktop shell is [MIT licensed](LICENSE). See
 
 ## Run and build
 
-Current target: **Ubuntu 26.04, Linux x86_64**. Development needs Node.js 24.9 or newer, npm, Rust, and the Linux libraries required by Tauri. The Ubuntu development packages used for this project are:
+Target: **updated Ubuntu 24.04 LTS and 26.04, Linux x86_64**. CI builds the
+installer on 24.04 and checks the same package on both versions, avoiding a
+dependency on the newer distribution's build libraries.
+
+The tested build toolchain is **Node.js 26.10.0, npm 12.1.0, and Rust 1.93.1**
+with the `rustfmt` and `clippy` components. Install Rust using
+[rustup](https://rustup.rs/); Ubuntu 24.04's default Rust packages are older than
+this toolchain. Use an official Node.js distribution that includes its `LICENSE`
+file: preparation bundles the executable and its complete third-party notices.
+npm 12.1.0 enforces the runtime's existing native install-script allowlist.
+
+Install the Ubuntu build libraries:
 
 ```sh
-sudo apt install cargo rustc rustfmt rust-clippy build-essential pkg-config \
+sudo apt install build-essential pkg-config \
   libwebkit2gtk-4.1-dev libssl-dev libxdo-dev \
   libayatana-appindicator3-dev librsvg2-dev curl wget file
 ```
 
 See the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for other distributions.
+
+Both supported Ubuntu versions provide WebKitGTK's **4.1 API**. Current validation
+uses WebKitGTK **2.52.6**; older WebKit versions are untested. Native GUI checks run
+under Xvfb with a fresh profile and no model request. They do not establish GPU
+or Wayland compatibility for every desktop environment.
+
+| OS | Current verification |
+| --- | --- |
+| Ubuntu 24.04.5 LTS x86_64 | Isolated source and installed-package validation in progress |
+| Ubuntu 26.04.1 x86_64 | Local source, backend, and native recovery checks passed; cross-version installer validation in progress |
 
 Get the source and enter the project directory:
 
