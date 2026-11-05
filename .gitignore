@@ -1,5 +1,6 @@
 node_modules/
 runtime/node
+runtime/NODE-LICENSE
 runtime/node_modules/
 src-tauri/target/
 src-tauri/gen/

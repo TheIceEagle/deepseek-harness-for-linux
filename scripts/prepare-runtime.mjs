@@ -1,6 +1,6 @@
 import { access, chmod, copyFile, realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const runtime = join(root, 'runtime');
@@ -12,6 +12,14 @@ if (process.platform !== 'linux' || process.arch !== 'x64') {
 }
 const destination = join(runtime, 'node');
 const source = await realpath(process.execPath);
-if (source !== destination) await copyFile(source, destination);
+const licenseDestination = join(runtime, 'NODE-LICENSE');
+const licenseSource = source === destination ? licenseDestination : join(dirname(source), '..', 'LICENSE');
+await access(licenseSource).catch(() => {
+  throw new Error('The Node.js LICENSE file is missing. Build with an official Node.js distribution so its license and third-party notices can be bundled.');
+});
+if (source !== destination) {
+  await copyFile(source, destination);
+  await copyFile(licenseSource, licenseDestination);
+}
 await chmod(destination, 0o755);
-console.log(`Prepared Node ${process.version} and DeepSeek Harness 0.2.1-rc.5 for Linux x86_64.`);
+console.log(`Prepared Node ${process.version}, its license notices, and DeepSeek Harness 0.2.1-rc.5 for Linux x86_64.`);

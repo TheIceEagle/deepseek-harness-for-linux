@@ -11,5 +11,9 @@ the upstream project; this shell is not an official DeepSeek desktop release.
 
 The lockfiles record the Rust and npm dependencies used by the shell and runtime.
 Each dependency retains its own license. Dependencies, the Node executable, and
-built installers are not committed to this repository. Binary distributions also
-need to retain the notices for their included Node runtime and dependencies.
+built installers are not committed to this repository. Build preparation copies
+the official Node.js distribution's complete `LICENSE` file, including its
+third-party notices, into the bundled runtime as `runtime/NODE-LICENSE`.
+Installers also include this notice, the shell's MIT license, and the upstream
+Harness license under the application's `licenses/` resources directory.
+The installed npm packages retain their accompanying license files.
