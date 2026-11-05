@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "startup",
+  "description": "Only the bundled startup page receives desktop capabilities. The Harness web runtime has no native command access.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

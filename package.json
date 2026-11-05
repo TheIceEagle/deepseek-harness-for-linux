@@ -1,0 +1,19 @@
+{
+  "name": "deepseek-harness-tauri",
+  "version": "0.1.1",
+  "private": true,
+  "description": "An unofficial Ubuntu desktop shell for DeepSeek Harness",
+  "scripts": {
+    "prepare:runtime": "node scripts/prepare-runtime.mjs",
+    "dev": "tauri dev",
+    "build": "tauri build --bundles deb",
+    "test:backend": "cargo test --manifest-path src-tauri/Cargo.toml --jobs 2",
+    "test:runtime": "node scripts/smoke-backend.mjs",
+    "test:desktop": "node scripts/smoke-desktop.mjs",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4",
+    "selenium-webdriver": "4.38.0"
+  }
+}

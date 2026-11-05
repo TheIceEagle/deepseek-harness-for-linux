@@ -1,0 +1,52 @@
+:root {
+  color-scheme: light dark;
+  --background: #f7f9fc;
+  --text: #18243b;
+  --muted: #52617a;
+  --primary: #315fd8;
+  --primary-hover: #244cb7;
+  --border: #ccd5e4;
+  --danger: #a62c36;
+  --scroll-thumb: #8a9ab4;
+  --scroll-track: #e8edf5;
+  --radius: 12px;
+  --space: 24px;
+  font-family: Ubuntu, Cantarell, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--background);
+  scrollbar-color: var(--scroll-thumb) var(--scroll-track);
+  scrollbar-width: auto;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; }
+main { width: min(100%, 620px); padding: 64px 32px 32px; margin: auto; }
+.brand-mark { color: var(--primary); font: 700 76px/1 Ubuntu, Cantarell, sans-serif; letter-spacing: normal; height: 88px; }
+.brand-mark span { display: inline-block; font-size: 45px; vertical-align: top; padding-top: 9px; letter-spacing: 0; }
+.eyebrow { color: var(--muted); font-size: 15px; margin: 22px 0 16px; }
+h1 { font-size: clamp(32px, 5vw, 48px); line-height: 1.12; letter-spacing: -0.015em; margin: 0 0 36px; font-weight: 500; }
+.status { display: flex; gap: 12px; align-items: center; min-height: 28px; }
+.status p { margin: 0; line-height: 1.5; }
+.indicator { width: 16px; height: 16px; flex: 0 0 16px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: turn 1s linear infinite; }
+.detail { margin: 12px 0 0; color: var(--muted); line-height: 1.6; min-height: 52px; overflow-wrap: anywhere; }
+.hint { color: var(--muted); font-size: 13px; line-height: 1.7; margin: 42px 0 0; }
+button { min-width: 112px; min-height: 44px; margin-top: var(--space); padding: 10px 20px; background: var(--primary); color: #ffffff; border: 0; border-radius: var(--radius); font: inherit; cursor: pointer; }
+button:hover { background: var(--primary-hover); }
+button:active { transform: translateY(1px); }
+button:focus-visible { outline: 3px solid var(--primary); outline-offset: 4px; }
+button:disabled { opacity: .5; cursor: wait; transform: none; }
+[hidden] { display: none !important; }
+body[data-state="error"] .indicator { animation: none; border-color: var(--danger); background: var(--danger); }
+footer { padding: 20px 32px; color: var(--muted); font-size: 12px; line-height: 1.6; text-align: center; }
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: var(--scroll-track); }
+::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border: 3px solid var(--scroll-track); border-radius: var(--radius); }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+::-webkit-scrollbar-thumb:active { background: var(--text); }
+@keyframes turn { to { transform: rotate(360deg); } }
+@media (prefers-color-scheme: dark) {
+  :root { --background: #151b27; --text: #e6edf9; --muted: #a7b7d0; --primary: #8babff; --primary-hover: #a7beff; --border: #3d4b63; --danger: #ff8891; --scroll-thumb: #5d708e; --scroll-track: #202a3a; }
+  button { color: #151b27; }
+}
+@media (max-width: 480px) { main { padding: 32px 24px 24px; } footer { padding: 16px 24px; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (forced-colors: active) { :root { scrollbar-color: auto; } button { border: 1px solid ButtonText; } .indicator { border-color: CanvasText; } }

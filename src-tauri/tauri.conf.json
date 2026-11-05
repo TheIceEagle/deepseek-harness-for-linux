@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DeepSeek Harness for Linux",
+  "version": "0.1.1",
+  "identifier": "local.deepseek.harness-linux",
+  "build": {
+    "beforeBuildCommand": "npm run prepare:runtime",
+    "beforeDevCommand": "npm run prepare:runtime",
+    "frontendDist": "../web"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [{
+      "label": "main",
+      "create": false,
+      "title": "DeepSeek Harness for Linux",
+      "width": 1280,
+      "height": 850,
+      "minWidth": 640,
+      "minHeight": 480,
+      "backgroundColor": "#f7f9fc",
+      "dragDropEnabled": false
+    }],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb"],
+    "category": "Productivity",
+    "shortDescription": "DeepSeek Harness in an Ubuntu desktop window",
+    "longDescription": "Unofficial Linux desktop shell using Tauri and the upstream DeepSeek Harness web runtime. Requires an API key for cloud models.",
+    "icon": ["icons/icon.png"],
+    "resources": {"../runtime/": "runtime/"},
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0t64", "libayatana-appindicator3-1", "xdg-utils", "xdg-user-dirs"],
+        "provides": ["harness-for-linux"],
+        "conflicts": ["harness-for-linux"],
+        "replaces": ["harness-for-linux"]
+      }
+    }
+  }
+}

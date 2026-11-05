@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Opening Harness — DeepSeek Harness for Linux</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="startup.js" defer></script>
+  </head>
+  <body>
+    <main aria-labelledby="heading">
+      <div class="brand-mark" aria-hidden="true">h<span>↗</span></div>
+      <p class="eyebrow">DeepSeek Harness for Linux</p>
+      <h1 id="heading">Your workspace,<br>ready to think.</h1>
+      <div class="status" role="status" aria-live="polite" aria-atomic="true">
+        <span class="indicator" aria-hidden="true"></span>
+        <p id="message">Opening your workspace…</p>
+      </div>
+      <p id="detail" class="detail">Your workspace settings are saved on this computer.</p>
+      <button id="retry" type="button" hidden disabled>Try again</button>
+      <p class="hint">Closing the window keeps tasks running.<br>Choose Quit from the tray to stop.</p>
+    </main>
+    <footer>Independent desktop shell · Powered by DeepSeek Harness</footer>
+  </body>
+</html>

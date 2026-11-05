@@ -1,0 +1,19 @@
+{
+  "name": "deepseek-harness-desktop-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.1-rc.5"
+  },
+  "overrides": {
+    "undici": "8.12.2",
+    "zod": "4.6.7",
+    "fflate": "0.8.3",
+    "@modelcontextprotocol/client": "2.3.0"
+  },
+  "allowScripts": {
+    "@deepseek-ai/dsh-subprocess-local@0.2.1-rc.5": true,
+    "koffi@3.1.1": true,
+    "node-pty@1.2.0-beta.15": true
+  }
+}

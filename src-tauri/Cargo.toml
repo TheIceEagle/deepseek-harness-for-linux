@@ -1,0 +1,23 @@
+[package]
+name = "harness-for-linux"
+version = "0.1.1"
+description = "Unofficial Tauri desktop shell for DeepSeek Harness"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+libc = "0.2"
+url = "2"
+open = "5"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 8

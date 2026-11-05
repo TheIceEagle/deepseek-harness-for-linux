@@ -1,0 +1,147 @@
+# DeepSeek Harness for Linux
+
+An unofficial Ubuntu desktop shell for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), using Rust and Tauri. It starts the original Harness Web backend and displays its original interface in a desktop window. The agent, models, tools, settings, and conversation UI stay upstream.
+
+The npm runtime is pinned to **`@deepseek-ai/dsh@0.2.1-rc.5`**. This project is independent of DeepSeek's official desktop distribution. Four transitive dependencies are overridden to patched versions: `undici@8.12.2`, `zod@4.6.7`, `fflate@0.8.3`, and `@modelcontextprotocol/client@2.3.0`.
+
+The desktop shell is [MIT licensed](LICENSE). See
+[third-party notices](THIRD_PARTY_NOTICES.md) for upstream attribution.
+
+## Run and build
+
+Current target: **Ubuntu 26.04, Linux x86_64**. Development needs Node.js 24.9 or newer, npm, Rust, and the Linux libraries required by Tauri. The Ubuntu development packages used for this project are:
+
+```sh
+sudo apt install cargo rustc rustfmt rust-clippy build-essential pkg-config \
+  libwebkit2gtk-4.1-dev libssl-dev libxdo-dev \
+  libayatana-appindicator3-dev librsvg2-dev curl wget file
+```
+
+See the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for other distributions.
+
+Get the source and enter the project directory:
+
+```sh
+git clone https://github.com/TheIceEagle/deepseek-harness-for-linux.git
+cd deepseek-harness-for-linux
+```
+
+Install the dependencies and start the development app:
+
+```sh
+npm ci
+npm ci --prefix runtime
+npm run dev
+```
+
+To create the Ubuntu installer:
+
+```sh
+npm run build
+```
+
+The `.deb` is written under `src-tauri/target/release/bundle/deb/`; the current installer is approximately **176 MiB**. Build preparation copies the current Node executable into the runtime; use a Node installation suitable for the target machine. The package includes Node and the installed Harness dependencies, so an installed application does not need a separate Node installation.
+
+Install the generated package with Ubuntu's package installer, then open **DeepSeek Harness for Linux** from the applications menu.
+
+The renamed package replaces the earlier **Harness for Linux** installation. Its
+application identifier and saved-profile location remain the same.
+
+## Using the app
+
+The launcher starts Harness on a dynamically assigned loopback port and waits for its authenticated startup URL before opening the workspace. The service is bound to `127.0.0.1`.
+
+Enter your API key in the **original Harness interface**, under **Settings → Models**, when prompted. Do not paste it into this development chat. Model access and usage charges follow your provider account.
+
+Closing the window hides the application and keeps its backend running. Reopen it from the tray; choose **Quit DeepSeek Harness** to stop the backend and exit. Quitting interrupts active work.
+
+Reopening a healthy workspace preserves its current page and unsent draft. If the view is blank or stuck loading, the shell reopens it using the backend's private launch address without stopping a healthy backend. If the backend has stopped, reopening retries startup. The tray's **Reload workspace** action provides a manual way to reload the view; it may discard an unsent draft. An interface that cannot finish startup within 45 seconds returns to the app's retry screen.
+
+On first use, upstream Harness creates `<Documents>/deepseek-harness/default-workspace/`. On Ubuntu, `xdg-user-dir DOCUMENTS` selects the Documents directory; the application's working directory does not control this location. If the Documents directory is unavailable, use **Choose workspace** to select a folder.
+
+Harness uses a separate profile beneath Tauri's application data directory:
+
+```text
+$XDG_DATA_HOME/local.deepseek.harness-linux/harness/
+```
+
+With the usual Ubuntu defaults, this is `~/.local/share/local.deepseek.harness-linux/harness/`. Settings, credentials, and sessions live there, separate from a normal `~/.dsh` installation.
+
+## Performance and compatibility
+
+Tauri uses the system WebKitGTK engine instead of shipping Electron's Chromium runtime. A smaller desktop shell and lower shell memory use are expected, but no percentage improvement has been measured. Node and the Harness backend still run; the package retains their dependencies.
+
+Cloud model generation is unchanged. A Rust window does not make DeepSeek's servers generate answers faster. Startup time, memory use, and interface responsiveness need measurements on the same workload before making comparisons.
+
+| Measurement | Recorded result (0.1.0) |
+| --- | --- |
+| Isolated backend startup to readiness | 1,026 ms |
+| Isolated backend graceful shutdown | 72 ms |
+| Installed desktop visible interface | 4,831 ms |
+| Installed desktop idle memory (PSS, seven processes) | 611 MiB |
+| Normal Ubuntu desktop document load | 4,952 ms |
+| Normal desktop current total memory (PSS, seven processes) | 809 MiB |
+| Comparison with Electron | Not measured |
+
+The backend timings are one smoke-test run. Desktop measurements use the installed
+release on Ubuntu 26.04 under Xvfb, with a fresh profile and no API request. The
+desktop figure includes Node and WebKit; it is not the memory of the Rust shell
+alone. Xvfb rendering and first-use setup affect these results. These are absolute
+measurements, not evidence of an improvement over Electron.
+
+The normal desktop figures were sampled from the running installed app, with its
+current UI state. They use the real desktop renderer rather than Xvfb; memory
+varies with open views and tasks.
+
+These measurements predate the reopen recovery changes. New timing records
+distinguish `workspace_document_loaded` from `workspace_ready`: a loaded document
+can still be waiting for the interface to mount. The 4,952 ms figure measures
+document load, not workspace readiness.
+
+This application provides the **Web profile's capabilities**. Features implemented by the official Electron shell need their own Linux integration. In particular:
+
+- The Web sidebar browser is disabled by default and uses an iframe when enabled. Some sites refuse embedding; it does not inherit Electron's embedded browser behavior.
+- Electron's native file dragging, embedded account pages, and desktop-specific integrations do not automatically carry over.
+- This shell has no official DeepSeek desktop updater. Runtime upgrades require an explicit dependency update, verification, and a new build.
+
+References: [Harness Web flags, authentication, and readiness](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/bundle/web-app/README.md), [default workspace policy](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/api/workspace-controller/README.md#first-use-workspace), [Web and Electron browser differences](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-sidebar-browser/README.md), [official desktop architecture](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/desktop/README.md). Upstream's current documentation may describe changes newer than the pinned runtime.
+
+## Validation
+
+The **0.1.1 recovery changes** have passed the following development checks:
+
+- `cargo test --manifest-path src-tauri/Cargo.toml --jobs 2`: **9 passed**.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`: passed.
+- `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --jobs 2 -- -D warnings`: passed.
+- Strict static UI audit: **0 findings**.
+- Before-fix regression reproduced: a blank test view with a healthy backend remained blank after a second application launch, reaching the test's 15-second timeout.
+- `HARNESS_TEST_REOPEN=1 HARNESS_TEST_WEBKIT_CRASH=1 node scripts/smoke-desktop.mjs`: passed for a healthy reopen preserving the draft, stale loading, a blank renderer, a stopped backend, reopening immediately after backend exit, and a terminated WebKit renderer. Renderer recovery preserved the healthy backend. The crash check verified a replacement renderer and workspace readiness; its native Xvfb screenshot was also visually checked because WebDriver retains its old page context after a renderer crash.
+
+The renamed **0.1.1 release** also passed installation and recovery checks:
+
+- `CARGO_BUILD_JOBS=2 npm run build`: produced `DeepSeek Harness for Linux_0.1.1_amd64.deb` (175.86 MiB after final packaging).
+- `npm run tauri -- bundle --bundles deb`: packaged the rename's replacement/conflict metadata for the earlier `harness-for-linux` package.
+- `sudo -n dpkg -i 'src-tauri/target/release/bundle/deb/DeepSeek Harness for Linux_0.1.1_amd64.deb'`: installed successfully and replaced 0.1.0. The old launcher entry was removed; the new entry is named **DeepSeek Harness for Linux**. `desktop-file-validate` passed.
+- `HARNESS_TEST_APPLICATION=/usr/bin/harness-for-linux HARNESS_TEST_REOPEN=1 HARNESS_TEST_WEBKIT_CRASH=1 node scripts/smoke-desktop.mjs`: all six recovery cases passed against the installed release, including privilege isolation and a visually verified native screenshot after renderer recovery.
+- Launching the installed desktop entry on the normal Ubuntu desktop reached `workspace_ready` in **5,059 ms**, using the existing profile. This is a single launch measurement, with no model request made by the verification script.
+
+The performance table above and these completed runtime/installed-app checks
+describe the preceding **0.1.0 release**, before the recovery changes:
+
+- `npm audit` from `runtime`: **0 known vulnerabilities** after the dependency overrides.
+- Backend HTTP smoke: authenticated workspace HTML **200**, application JavaScript **200**, graceful exit **0**; timings appear above.
+- Native WebKit checks: original Harness interface rendered, and backend crash recovery with retry passed. The production shell performs one bounded same-origin reload during startup, preserving upstream's `HttpOnly; SameSite=Strict` authentication cookie.
+- `HARNESS_TEST_FAILURE=1 node scripts/smoke-desktop.mjs`: missing-runtime error, keyboard retry, 640px window, and scrollbar checks passed.
+- `HARNESS_TEST_APPLICATION=/usr/bin/harness-for-linux HARNESS_TEST_CRASH=1 node scripts/smoke-desktop.mjs`: installed interface, privilege isolation and crash/retry passed. A subsequent installed-app run produced the timing and memory figures above.
+- `npm run build` produced the Ubuntu installer; `sudo dpkg -i` installed it successfully. `npm run tauri -- bundle --bundles deb` refreshed the final dependency metadata.
+- Static UI audit: no findings. DESIGN.md lint: no errors (seven informational orphan-token warnings because CSS is canonical).
+
+Model requests require an API key and were not tested. No comparison with Electron
+or cloud generation speedup has been measured.
+
+The smoke scripts and their reports are in `scripts/` and `artifacts/`. Desktop
+tests need `xvfb`, `webkitgtk-webdriver` and `cargo install tauri-driver --locked`.
+The optional renderer-crash screenshot also needs Python 3 with PyGObject and Gdk
+3 bindings (`python3-gi` and `gir1.2-gtk-3.0` on Ubuntu).
+They run on a separate session bus and restrict cleanup to their own process tree,
+so an app already open on the user's desktop is unaffected.

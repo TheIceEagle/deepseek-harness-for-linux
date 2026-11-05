@@ -1,0 +1,12 @@
+node_modules/
+runtime/node
+runtime/node_modules/
+src-tauri/target/
+src-tauri/gen/
+artifacts/
+*.log
+.impeccable/
+.env
+.env.*
+!.env.example
+*.deb
