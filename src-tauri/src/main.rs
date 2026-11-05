@@ -19,6 +19,7 @@ use url::{Host, Url};
 
 struct AppState {
     backend: Arc<Mutex<Backend>>,
+    workspace_status: MenuItem<tauri::Wry>,
     ready_url: Mutex<Option<Url>>,
     port: AtomicU16,
     rendered: AtomicBool,
@@ -33,6 +34,16 @@ struct AppState {
     shutdown: Arc<AtomicBool>,
     launched: Instant,
     data_dir: PathBuf,
+}
+
+impl AppState {
+    fn set_workspace_running(&self, running: bool) {
+        let _ = self.workspace_status.set_text(if running {
+            "Workspace running"
+        } else {
+            "Workspace stopped"
+        });
+    }
 }
 
 #[derive(Serialize)]
@@ -108,14 +119,22 @@ async fn start_backend(
 ) -> Result<StartupInfo, String> {
     require_startup_page(&window)?;
     let backend = Arc::clone(&state.backend);
-    let ready = tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         backend
             .lock()
             .map_err(|_| "The workspace process is unavailable. Restart the app.".to_string())?
             .start()
     })
     .await
-    .map_err(|_| "The workspace process could not start. Try again.".to_string())??;
+    .map_err(|_| "The workspace process could not start. Try again.".to_string())
+    .and_then(|result| result);
+    let ready = match result {
+        Ok(ready) => ready,
+        Err(error) => {
+            state.set_workspace_running(false);
+            return Err(error);
+        }
+    };
     let url = Url::parse(&ready.url).map_err(|_| "The workspace returned an invalid address.")?;
     state.port.store(
         url.port()
@@ -127,6 +146,7 @@ async fn start_backend(
         .lock()
         .map_err(|_| "The workspace address is unavailable.")? = Some(url);
     recovery::prepare_workspace(&state);
+    state.set_workspace_running(true);
     metric(&state, "backend_ready", ready.startup_ms.into());
     Ok(StartupInfo {
         startup_ms: ready.startup_ms,
@@ -166,8 +186,16 @@ fn main() {
             }
             let backend = Backend::new(runtime_dir, data_dir.clone());
             let shutdown = backend.shutdown_signal();
+            let workspace_status = MenuItem::with_id(
+                app,
+                "workspace-status",
+                "Workspace stopped",
+                false,
+                None::<&str>,
+            )?;
             app.manage(AppState {
                 backend: Arc::new(Mutex::new(backend)),
+                workspace_status: workspace_status.clone(),
                 ready_url: Mutex::new(None),
                 port: AtomicU16::new(0),
                 rendered: AtomicBool::new(false),
@@ -211,7 +239,7 @@ fn main() {
             let show = MenuItem::with_id(app, "show", "Open DeepSeek Harness", true, None::<&str>)?;
             let reload = MenuItem::with_id(app, "reload", "Reload workspace", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit DeepSeek Harness", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &reload, &quit])?;
+            let menu = Menu::with_items(app, &[&workspace_status, &show, &reload, &quit])?;
             TrayIconBuilder::new()
                 .icon(
                     app.default_window_icon()
@@ -258,6 +286,7 @@ fn main() {
                 };
                 let running = backend.is_running();
                 if !running && !state.exiting.load(Ordering::SeqCst) {
+                    state.set_workspace_running(false);
                     state.port.store(0, Ordering::SeqCst);
                     state.view_generation.fetch_add(1, Ordering::SeqCst);
                     state.rendered.store(false, Ordering::SeqCst);

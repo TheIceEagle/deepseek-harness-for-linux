@@ -98,6 +98,8 @@ The native tray provides Open DeepSeek Harness and Quit DeepSeek Harness. Closin
 it so tasks continue; quitting gracefully stops the owned backend. Reload workspace
 repairs the view while preserving a running backend. Opening the app again retries
 a stopped workspace and repairs a blank view. Healthy views keep their drafts.
+The tray's disabled status row reads Workspace running after backend readiness and
+Workspace stopped after a failed start or backend exit. It is informational only.
 Workspace startup has a bounded wait and returns to a retry screen if the view
 cannot finish opening.
 
