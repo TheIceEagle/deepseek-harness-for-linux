@@ -15,7 +15,7 @@ use std::time::Instant;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, RunEvent, State, WebviewWindow, WebviewWindowBuilder};
-use url::Url;
+use url::{Host, Url};
 
 struct AppState {
     backend: Arc<Mutex<Backend>>,
@@ -46,6 +46,36 @@ fn bundled_page(url: &Url) -> bool {
         && url.port().is_none()
         && ((url.scheme() == "tauri" && url.host_str() == Some("localhost"))
             || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost")))
+}
+
+fn external_link(url: &Url) -> bool {
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return false;
+    }
+    let loopback = match url.host() {
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => {
+            address.is_loopback()
+                || address
+                    .to_ipv4_mapped()
+                    .is_some_and(|address| address.is_loopback())
+        }
+        Some(Host::Domain(host)) => {
+            let host = host.trim_end_matches('.');
+            host == "localhost" || host.ends_with(".localhost")
+        }
+        None => return false,
+    };
+    // A popup or an in-flight navigation from a stopped backend must not send
+    // its private launch credential to xdg-open or a browser's process arguments.
+    // Keep ordinary local tool links available without their sign-in URLs.
+    !(loopback
+        && url
+            .query_pairs()
+            .any(|(name, _)| name.eq_ignore_ascii_case("token")))
 }
 
 fn require_startup_page(window: &WebviewWindow) -> Result<(), String> {
@@ -166,19 +196,13 @@ fn main() {
                     {
                         return true;
                     }
-                    if matches!(url.scheme(), "http" | "https")
-                        && url.username().is_empty()
-                        && url.password().is_none()
-                    {
+                    if external_link(url) {
                         let _ = open::that_detached(url.as_str());
                     }
                     false
                 })
                 .on_new_window(|url, _| {
-                    if matches!(url.scheme(), "http" | "https")
-                        && url.username().is_empty()
-                        && url.password().is_none()
-                    {
+                    if external_link(&url) {
                         let _ = open::that_detached(url.as_str());
                     }
                     tauri::webview::NewWindowResponse::Deny
@@ -319,4 +343,44 @@ fn main() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_launch_links_never_reach_external_processes() {
+        for candidate in [
+            "http://127.0.0.1:3081/?token=fixture",
+            "http://127.0.0.1:3999/?token=stale-fixture",
+            "http://127.1:3081/?%74oken=encoded-fixture",
+            "http://2130706433:3081/?TOKEN=fixture",
+            "http://localhost:3081/?token=fixture",
+            "http://localhost.:3081/?token=fixture",
+            "https://app.localhost:3081/path?next=1&token=fixture",
+            "http://[::1]:3081/?token=fixture",
+            "http://[::ffff:127.0.0.1]:3081/?token=fixture",
+            "https://127.0.0.1:3081/?token=fixture",
+            "http://user:password@example.com/",
+            "https://%75ser@example.com/",
+            "file:///tmp/workspace",
+            "javascript:alert(1)",
+        ] {
+            assert!(!external_link(&Url::parse(candidate).unwrap()));
+        }
+    }
+
+    #[test]
+    fn ordinary_external_and_local_tool_links_still_open() {
+        for candidate in [
+            "https://www.deepseek.com/",
+            "https://example.com/login?token=service-owned-token",
+            "http://127.0.0.1:8000/docs",
+            "http://localhost:8080/?page=tools",
+            "http://[::1]:8080/",
+        ] {
+            assert!(external_link(&Url::parse(candidate).unwrap()));
+        }
+    }
 }

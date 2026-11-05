@@ -417,6 +417,37 @@ mod tests {
     }
 
     #[test]
+    fn launch_arguments_bind_loopback_without_a_credential() {
+        let mut fixture = Fixture::new(
+            "printf '%s\\n' \"$@\" > \"$DSH_HOME/../arguments\"\necho 'dsh web: http://127.0.0.1:3081/?token=argument-fixture'\nsleep 60",
+        );
+        let ready = fixture.backend.start().unwrap();
+        let arguments = fs::read_to_string(fixture.path.join("data/arguments")).unwrap();
+        let entry = fixture
+            .backend
+            .runtime_dir
+            .join("node_modules/@deepseek-ai/dsh/lib/bin.js");
+        assert_eq!(
+            arguments.lines().collect::<Vec<_>>(),
+            [
+                entry.to_str().unwrap(),
+                "web",
+                "--no-open",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "0",
+            ]
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let command_line = fs::read(format!("/proc/{}/cmdline", ready.pid)).unwrap();
+            assert!(!String::from_utf8_lossy(&command_line).contains("token="));
+            assert!(!String::from_utf8_lossy(&command_line).contains("argument-fixture"));
+        }
+    }
+
+    #[test]
     fn cleans_up_failed_startup_and_allows_a_retry() {
         let mut fixture = Fixture::new("exit 7");
         assert!(fixture.backend.start().is_err());

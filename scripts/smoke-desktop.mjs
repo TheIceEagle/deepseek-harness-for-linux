@@ -26,7 +26,19 @@ const env = { ...process.env, DISPLAY: display, GDK_BACKEND: 'x11', XDG_DATA_HOM
 if (process.env.HARNESS_TEST_FAILURE === '1') env.HARNESS_TEST_RUNTIME_DIR = join(scratch, 'missing-runtime');
 // A separate session bus prevents the single-instance plugin from connecting
 // this test to an app the user already has open on their desktop.
-const server = spawn('dbus-run-session', ['--', join(homedir(), '.cargo/bin/tauri-driver'), '--port', '4446', '--native-port', '4447'], { env, stdio: 'ignore', detached: true });
+const server = spawn('dbus-run-session', ['--', join(homedir(), '.cargo/bin/tauri-driver'), '--port', '4446', '--native-port', '4447'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+let launchCredentialPrinted = false;
+let outputTail = '';
+const hasLaunchCredential = text => /[?&]token=|dsh web: /i.test(text);
+const inspectOutput = chunk => {
+  const text = outputTail + chunk.toString();
+  launchCredentialPrinted ||= hasLaunchCredential(text);
+  // Only retain enough to detect an announcement split across chunks. Never
+  // print or persist this output: a failed secrecy check must not leak it itself.
+  outputTail = text.slice(-256);
+};
+server.stdout.on('data', inspectOutput);
+server.stderr.on('data', inspectOutput);
 let driver;
 let appPid;
 try {
@@ -55,6 +67,8 @@ try {
     };
     await driver.wait(retryReady, 15000);
     assert.match(await driver.findElement(By.id('detail')).getText(), /runtime is missing/);
+    const coreDenied = await driver.executeAsyncScript(`const done = arguments[arguments.length - 1]; if (!window.__TAURI__?.core?.invoke) done('missing-api'); else window.__TAURI__.core.invoke('plugin:window|title', { label: 'main' }).then(() => done('allowed')).catch(error => done(/not allowed|permissions|denied/i.test(String(error)) ? 'denied' : 'other-error'));`);
+    assert.equal(coreDenied, 'denied', 'The bundled startup page has no unused core window privileges');
     console.log('Missing-runtime error is visible.');
     await driver.executeScript("window.__retryClicks = 0; document.querySelector('#retry').addEventListener('click', () => window.__retryClicks++);");
     await driver.findElement(By.id('retry')).sendKeys(' ');
@@ -208,8 +222,19 @@ try {
       reopenReport.immediateReopenRecovery = 'passed';
 
       if (process.env.HARNESS_TEST_WEBKIT_CRASH === '1') {
-        const readyCount = async () => (await readFile(join(data, 'local.deepseek.harness-linux/performance.jsonl'), 'utf8'))
-          .trim().split('\n').map(JSON.parse).filter(event => event.phase === 'workspace_ready').length;
+        const readinessEvents = async () => (await readFile(join(data, 'local.deepseek.harness-linux/performance.jsonl'), 'utf8'))
+          .trim().split('\n').map(JSON.parse);
+        // A URL can change before its new document finishes mounting. Isolate
+        // renderer recovery from the preceding backend restart by requiring
+        // the native app to have observed this backend's usable workspace.
+        await driver.wait(async () => {
+          try {
+            const events = await readinessEvents();
+            return events.findLastIndex(event => event.phase === 'workspace_ready')
+              > events.findLastIndex(event => event.phase === 'backend_ready');
+          } catch { return false; }
+        }, 15000, 'The replacement backend workspace must mount before the renderer crash test');
+        const readyCount = async () => (await readinessEvents()).filter(event => event.phase === 'workspace_ready').length;
         const beforeCrashReadyCount = await readyCount();
         const childRows = execFileSync('ps', ['-eo', 'pid=,ppid=,comm='], { encoding: 'utf8' }).trim().split('\n');
         const rendererPid = childRows.map(line => line.trim().split(/\s+/)).find(([, parent, comm]) => Number(parent) === appPid && comm.startsWith('WebKitWebProces'))?.[0];
@@ -257,11 +282,28 @@ image.savev(sys.argv[1], 'png', [], [])
       await driver.wait(workspaceVisible, 60000);
       console.log(JSON.stringify({ crashRecovery: 'passed' }));
     }
+    const backendPid = await latestBackendPid();
+    await requireOwnedProcess(backendPid);
+    for (const pid of [appPid, backendPid]) {
+      const argumentsText = await readFile(`/proc/${pid}/cmdline`, 'utf8');
+      assert.equal(hasLaunchCredential(argumentsText), false,
+        'Desktop and backend arguments contain no authenticated startup URL');
+    }
+    for (const name of ['desktop.log', 'performance.jsonl']) {
+      const log = await readFile(join(data, 'local.deepseek.harness-linux', name), 'utf8');
+      assert.equal(hasLaunchCredential(log), false,
+        'Desktop logs contain no authenticated startup URL');
+    }
+    assert.equal(launchCredentialPrinted, false, 'The desktop never forwards the private startup URL to stdout or stderr');
+    console.log(JSON.stringify({ startupCredentialsPrivate: 'passed' }));
   }
 } catch (error) {
   const diagnostics = {};
   for (const name of ['performance.jsonl', 'desktop.log']) {
-    try { diagnostics[name] = await readFile(join(data, 'local.deepseek.harness-linux', name), 'utf8'); } catch {}
+    try {
+      const log = await readFile(join(data, 'local.deepseek.harness-linux', name), 'utf8');
+      diagnostics[name] = hasLaunchCredential(log) ? 'Omitted: startup credential detected in log.' : log;
+    } catch {}
   }
   try {
     diagnostics.processes = execFileSync('ps', ['-eo', 'pid=,ppid=,comm='], { encoding: 'utf8' }).trim().split('\n').filter(line => /harness-for|WebKit|tauri-driver/.test(line));
