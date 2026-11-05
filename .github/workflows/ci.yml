@@ -1,0 +1,157 @@
+name: CI
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+env:
+  CARGO_BUILD_JOBS: "2"
+  CARGO_INCREMENTAL: "0"
+  # Keep debug assertions for tests without caching large debugger symbols.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+jobs:
+  check:
+    name: Source and recovery checks (Ubuntu ${{ matrix.ubuntu }})
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ["24.04", "26.04"]
+    runs-on: ubuntu-${{ matrix.ubuntu }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-linux
+        with:
+          ubuntu: ${{ matrix.ubuntu }}
+      - name: Check formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Check Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Audit runtime dependencies
+        run: npm audit --prefix runtime
+      - name: Run the authenticated backend smoke test
+        run: npm run test:runtime
+      - name: Build the desktop test application
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked
+      - name: Check missing-runtime errors and keyboard retry
+        run: HARNESS_TEST_FAILURE=1 npm run test:desktop
+      - name: Check backend crash and manual retry
+        run: HARNESS_TEST_CRASH=1 npm run test:desktop
+      - name: Check reopening, drafts, loading and renderer recovery
+        run: HARNESS_TEST_REOPEN=1 HARNESS_TEST_WEBKIT_CRASH=1 npm run test:desktop
+      - name: Retain test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: source-test-reports-ubuntu-${{ matrix.ubuntu }}
+          path: |
+            artifacts/*.json
+            artifacts/*.png
+          if-no-files-found: ignore
+          retention-days: 7
+  package:
+    name: Build the Debian package on Ubuntu 24.04
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-linux
+        with:
+          ubuntu: "24.04"
+          build-profile: "release"
+      - name: Verify package and release versions
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const read = path => JSON.parse(readFileSync(path, 'utf8'));
+          const version = read('package.json').version;
+          assert.equal(read('package-lock.json').version, version);
+          assert.equal(read('package-lock.json').packages[''].version, version);
+          assert.equal(read('src-tauri/tauri.conf.json').version, version);
+          const cargo = readFileSync('src-tauri/Cargo.toml', 'utf8');
+          assert.equal(cargo.match(/^version = "([^"]+)"$/m)?.[1], version);
+          if (process.env.RELEASE_TAG) assert.equal(process.env.RELEASE_TAG, 'v' + version);
+          console.log('Verified application version ' + version);
+          JS
+      - name: Build the Debian installer and checksums
+        run: |
+          rm -rf src-tauri/target/release/bundle/deb
+          npm run build -- -- --locked
+          cd src-tauri/target/release/bundle/deb
+          set -- *.deb
+          test "$#" -eq 1
+          test -f "$1"
+          sha256sum -- *.deb > SHA256SUMS
+      - name: Retain the installer tested by this workflow
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-deb-${{ github.sha }}
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/deb/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+  installed:
+    name: Check the installed Debian package (Ubuntu ${{ matrix.ubuntu }})
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ["24.04", "26.04"]
+    runs-on: ubuntu-${{ matrix.ubuntu }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-linux
+        with:
+          ubuntu: ${{ matrix.ubuntu }}
+          install-runtime: "false"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-deb-${{ github.sha }}
+          path: artifacts/deb
+      - name: Verify and install the tested package
+        run: |
+          cd artifacts/deb
+          sha256sum --check SHA256SUMS
+          sudo apt-get install --yes --no-install-recommends ./*.deb
+          installed_resources="/usr/lib/DeepSeek Harness for Linux"
+          test -s "$installed_resources/runtime/NODE-LICENSE"
+          test -s "$installed_resources/licenses/LICENSE"
+          test -s "$installed_resources/licenses/THIRD_PARTY_NOTICES.md"
+          test -s "$installed_resources/licenses/deepseek-harness-MIT.txt"
+          test "$("$installed_resources/runtime/node" --version)" = "v26.10.0"
+      - name: Check installed backend crash and manual retry
+        run: HARNESS_TEST_APPLICATION=/usr/bin/harness-for-linux HARNESS_TEST_CRASH=1 npm run test:desktop
+      - name: Check installed reopening and renderer recovery
+        run: HARNESS_TEST_APPLICATION=/usr/bin/harness-for-linux HARNESS_TEST_REOPEN=1 HARNESS_TEST_WEBKIT_CRASH=1 npm run test:desktop
+      - name: Retain installed-package reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installed-test-reports-ubuntu-${{ matrix.ubuntu }}
+          path: |
+            artifacts/*.json
+            artifacts/*.png
+          if-no-files-found: ignore
+          retention-days: 7

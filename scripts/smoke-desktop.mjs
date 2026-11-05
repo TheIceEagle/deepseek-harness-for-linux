@@ -26,7 +26,19 @@ const env = { ...process.env, DISPLAY: display, GDK_BACKEND: 'x11', XDG_DATA_HOM
 if (process.env.HARNESS_TEST_FAILURE === '1') env.HARNESS_TEST_RUNTIME_DIR = join(scratch, 'missing-runtime');
 // A separate session bus prevents the single-instance plugin from connecting
 // this test to an app the user already has open on their desktop.
-const server = spawn('dbus-run-session', ['--', join(homedir(), '.cargo/bin/tauri-driver'), '--port', '4446', '--native-port', '4447'], { env, stdio: 'ignore', detached: true });
+const server = spawn('dbus-run-session', ['--', join(homedir(), '.cargo/bin/tauri-driver'), '--port', '4446', '--native-port', '4447'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+let launchCredentialPrinted = false;
+let outputTail = '';
+const hasLaunchCredential = text => /[?&]token=|dsh web: /i.test(text);
+const inspectOutput = chunk => {
+  const text = outputTail + chunk.toString();
+  launchCredentialPrinted ||= hasLaunchCredential(text);
+  // Only retain enough to detect an announcement split across chunks. Never
+  // print or persist this output: a failed secrecy check must not leak it itself.
+  outputTail = text.slice(-256);
+};
+server.stdout.on('data', inspectOutput);
+server.stderr.on('data', inspectOutput);
 let driver;
 let appPid;
 try {
@@ -48,24 +60,47 @@ try {
   for (let i = 0; i < 8; i++) for (const row of testRows) if (testTree.has(row.ppid)) testTree.add(row.pid);
   appPid = testRows.find(row => testTree.has(row.pid) && /harness-for-lin/.test(row.comm))?.pid;
   assert.ok(appPid, 'Only the app launched by this test may be inspected or stopped');
+  // Keep the private bus address in memory; it is shared only with this test's
+  // secondary launch and native-menu reader, never emitted with the environment.
+  const appEnvironment = await readFile(`/proc/${appPid}/environ`, 'utf8');
+  const busEntry = appEnvironment.split('\0').find(entry => entry.startsWith('DBUS_SESSION_BUS_ADDRESS='));
+  assert.ok(busEntry, 'The isolated test app must have its own session bus');
+  const privateBusEnvironment = { ...env, DBUS_SESSION_BUS_ADDRESS: busEntry.slice('DBUS_SESSION_BUS_ADDRESS='.length) };
+  const assertTrayStatus = async label => {
+    let items = [];
+    await driver.wait(() => {
+      try {
+        items = JSON.parse(execFileSync('python3', [join(root, 'scripts/read-tray-menu.py'), String(appPid)], {
+          env: privateBusEnvironment, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
+        }));
+        return items.some(item => item.label === label && item.enabled === false);
+      } catch { return false; }
+    }, 10000, `The native tray must show a disabled "${label}" status`);
+    assert.equal(items.filter(item => item.label.startsWith('Workspace ')).length, 1,
+      'The tray contains exactly one informational workspace status');
+  };
   if (process.env.HARNESS_TEST_FAILURE === '1') {
     const retryReady = async () => {
       try { return await driver.executeScript("const retry = document.querySelector('#retry'); return Boolean(retry && !retry.hidden && !retry.disabled && document.body.dataset.state === 'error')"); }
       catch { return false; }
     };
     await driver.wait(retryReady, 15000);
+    await assertTrayStatus('Workspace stopped');
     assert.match(await driver.findElement(By.id('detail')).getText(), /runtime is missing/);
+    const coreDenied = await driver.executeAsyncScript(`const done = arguments[arguments.length - 1]; if (!window.__TAURI__?.core?.invoke) done('missing-api'); else window.__TAURI__.core.invoke('plugin:window|title', { label: 'main' }).then(() => done('allowed')).catch(error => done(/not allowed|permissions|denied/i.test(String(error)) ? 'denied' : 'other-error'));`);
+    assert.equal(coreDenied, 'denied', 'The bundled startup page has no unused core window privileges');
     console.log('Missing-runtime error is visible.');
     await driver.executeScript("window.__retryClicks = 0; document.querySelector('#retry').addEventListener('click', () => window.__retryClicks++);");
     await driver.findElement(By.id('retry')).sendKeys(' ');
     assert.equal(await driver.executeScript('return window.__retryClicks'), 1, 'Keyboard activation retries exactly once');
     await driver.wait(retryReady, 10000);
+    await assertTrayStatus('Workspace stopped');
     await writeFile(join(artifacts, 'startup-error-desktop.png'), await driver.takeScreenshot(), 'base64');
     await driver.manage().window().setRect({ width: 640, height: 520 });
     assert.equal(await driver.executeScript('return document.documentElement.scrollWidth <= innerWidth'), true);
     assert.notEqual(await driver.executeScript('return getComputedStyle(document.documentElement).scrollbarColor'), 'auto');
     await writeFile(join(artifacts, 'startup-error.png'), await driver.takeScreenshot(), 'base64');
-    console.log(JSON.stringify({ failureRecovery: 'passed', keyboardRetry: 'passed', narrowViewport: 'passed', scrollbar: 'passed' }));
+    console.log(JSON.stringify({ failureRecovery: 'passed', keyboardRetry: 'passed', narrowViewport: 'passed', scrollbar: 'passed', trayStopped: 'passed' }));
   } else {
     const workspaceVisible = async () => {
       try {
@@ -74,6 +109,7 @@ try {
     };
     await driver.wait(workspaceVisible, 90000);
     const visibleMs = Math.round(performance.now() - started);
+    await assertTrayStatus('Workspace running');
     await delay(1500);
     await writeFile(join(artifacts, 'workspace.png'), await driver.takeScreenshot(), 'base64');
     const text = await driver.findElement(By.css('body')).getText();
@@ -112,12 +148,7 @@ try {
     };
     if (process.env.HARNESS_TEST_REOPEN === '1') {
       let nativeScreenshot = false;
-      // Read only the session-bus address, keep it in memory, and never emit the
-      // environment. The second launch must reach this test's resident instance.
-      const appEnvironment = await readFile(`/proc/${appPid}/environ`, 'utf8');
-      const busEntry = appEnvironment.split('\0').find(entry => entry.startsWith('DBUS_SESSION_BUS_ADDRESS='));
-      assert.ok(busEntry, 'The isolated test app must have its own session bus');
-      const reopenEnvironment = { ...env, DBUS_SESSION_BUS_ADDRESS: busEntry.slice('DBUS_SESSION_BUS_ADDRESS='.length) };
+      const reopenEnvironment = { ...privateBusEnvironment };
       for (const key of ['TAURI_AUTOMATION', 'TAURI_WEBVIEW_AUTOMATION', 'WEBKIT_INSPECTOR_SERVER']) delete reopenEnvironment[key];
       const reopen = async () => {
         const secondary = spawn(application, [], { env: reopenEnvironment, stdio: 'ignore' });
@@ -180,8 +211,10 @@ try {
           return !(await processRunning(originalBackendPid)) && await driver.executeScript("return location.hostname !== '127.0.0.1' && new URLSearchParams(location.search).has('recovery')");
         } catch { return false; }
       }, 15000, 'The stopped workspace must reach its recovery screen');
+      await assertTrayStatus('Workspace stopped');
       await reopen();
       await driver.wait(workspaceVisible, 15000, 'Reopening must restart a stopped workspace');
+      await assertTrayStatus('Workspace running');
       const restartedBackendPid = await latestBackendPid();
       assert.notEqual(restartedBackendPid, originalBackendPid, 'A stopped workspace needs a new backend process');
       await requireOwnedProcess(restartedBackendPid);
@@ -205,11 +238,23 @@ try {
       }, 15000, 'An immediate reopen must survive the backend recovery transition');
       const activeBackendPid = await latestBackendPid();
       await requireOwnedProcess(activeBackendPid);
+      await assertTrayStatus('Workspace running');
       reopenReport.immediateReopenRecovery = 'passed';
 
       if (process.env.HARNESS_TEST_WEBKIT_CRASH === '1') {
-        const readyCount = async () => (await readFile(join(data, 'local.deepseek.harness-linux/performance.jsonl'), 'utf8'))
-          .trim().split('\n').map(JSON.parse).filter(event => event.phase === 'workspace_ready').length;
+        const readinessEvents = async () => (await readFile(join(data, 'local.deepseek.harness-linux/performance.jsonl'), 'utf8'))
+          .trim().split('\n').map(JSON.parse);
+        // A URL can change before its new document finishes mounting. Isolate
+        // renderer recovery from the preceding backend restart by requiring
+        // the native app to have observed this backend's usable workspace.
+        await driver.wait(async () => {
+          try {
+            const events = await readinessEvents();
+            return events.findLastIndex(event => event.phase === 'workspace_ready')
+              > events.findLastIndex(event => event.phase === 'backend_ready');
+          } catch { return false; }
+        }, 15000, 'The replacement backend workspace must mount before the renderer crash test');
+        const readyCount = async () => (await readinessEvents()).filter(event => event.phase === 'workspace_ready').length;
         const beforeCrashReadyCount = await readyCount();
         const childRows = execFileSync('ps', ['-eo', 'pid=,ppid=,comm='], { encoding: 'utf8' }).trim().split('\n');
         const rendererPid = childRows.map(line => line.trim().split(/\s+/)).find(([, parent, comm]) => Number(parent) === appPid && comm.startsWith('WebKitWebProces'))?.[0];
@@ -222,6 +267,7 @@ try {
         // then capture the actual display rather than that stale automation view.
         await driver.wait(async () => await readyCount() > beforeCrashReadyCount, 15000,
           'Reopening must mount a replacement WebKit renderer');
+        await assertTrayStatus('Workspace running');
         assert.equal(await latestBackendPid(), activeBackendPid, 'A renderer crash must preserve the workspace process');
         const replacementRows = execFileSync('ps', ['-eo', 'pid=,ppid=,comm='], { encoding: 'utf8' }).trim().split('\n');
         assert.ok(replacementRows.some(line => {
@@ -249,19 +295,38 @@ image.savev(sys.argv[1], 'png', [], [])
       await requireOwnedProcess(backendPid);
       process.kill(backendPid, 'SIGKILL');
       await driver.wait(async () => (await driver.getCurrentUrl()).includes('recovery=1'), 15000);
+      await assertTrayStatus('Workspace stopped');
       await driver.wait(async () => {
         try { return await driver.executeScript("const retry=document.querySelector('#retry'); return Boolean(retry && !retry.hidden && !retry.disabled)"); }
         catch { return false; }
       }, 5000);
       await driver.findElement(By.id('retry')).click();
       await driver.wait(workspaceVisible, 60000);
+      await assertTrayStatus('Workspace running');
       console.log(JSON.stringify({ crashRecovery: 'passed' }));
     }
+    const backendPid = await latestBackendPid();
+    await requireOwnedProcess(backendPid);
+    for (const pid of [appPid, backendPid]) {
+      const argumentsText = await readFile(`/proc/${pid}/cmdline`, 'utf8');
+      assert.equal(hasLaunchCredential(argumentsText), false,
+        'Desktop and backend arguments contain no authenticated startup URL');
+    }
+    for (const name of ['desktop.log', 'performance.jsonl']) {
+      const log = await readFile(join(data, 'local.deepseek.harness-linux', name), 'utf8');
+      assert.equal(hasLaunchCredential(log), false,
+        'Desktop logs contain no authenticated startup URL');
+    }
+    assert.equal(launchCredentialPrinted, false, 'The desktop never forwards the private startup URL to stdout or stderr');
+    console.log(JSON.stringify({ startupCredentialsPrivate: 'passed', trayBackendStatus: 'passed' }));
   }
 } catch (error) {
   const diagnostics = {};
   for (const name of ['performance.jsonl', 'desktop.log']) {
-    try { diagnostics[name] = await readFile(join(data, 'local.deepseek.harness-linux', name), 'utf8'); } catch {}
+    try {
+      const log = await readFile(join(data, 'local.deepseek.harness-linux', name), 'utf8');
+      diagnostics[name] = hasLaunchCredential(log) ? 'Omitted: startup credential detected in log.' : log;
+    } catch {}
   }
   try {
     diagnostics.processes = execFileSync('ps', ['-eo', 'pid=,ppid=,comm='], { encoding: 'utf8' }).trim().split('\n').filter(line => /harness-for|WebKit|tauri-driver/.test(line));

@@ -1,29 +1,84 @@
 # DeepSeek Harness for Linux
 
-An unofficial Ubuntu desktop shell for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), using Rust and Tauri. It starts the original Harness Web backend and displays its original interface in a desktop window. The agent, models, tools, settings, and conversation UI stay upstream.
+**Unofficial community project. Not affiliated with or endorsed by DeepSeek.**
+
+An Ubuntu desktop shell for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), using Rust and Tauri. It starts the original Harness Web backend and displays its original interface in a desktop window. The agent, models, tools, settings, and conversation UI stay upstream.
 
 The npm runtime is pinned to **`@deepseek-ai/dsh@0.2.1-rc.5`**. This project is independent of DeepSeek's official desktop distribution. Four transitive dependencies are overridden to patched versions: `undici@8.12.2`, `zod@4.6.7`, `fflate@0.8.3`, and `@modelcontextprotocol/client@2.3.0`.
 
 The desktop shell is [MIT licensed](LICENSE). See
 [third-party notices](THIRD_PARTY_NOTICES.md) for upstream attribution.
+The [override notes](runtime/DEPENDENCIES.md) explain the dependency pins and when
+they can be removed.
 
-## Run and build
+## Install
 
-Current target: **Ubuntu 26.04, Linux x86_64**. Development needs Node.js 24.9 or newer, npm, Rust, and the Linux libraries required by Tauri. The Ubuntu development packages used for this project are:
+Verified `.deb` packages and `SHA256SUMS` are published through
+[GitHub Releases](https://github.com/TheIceEagle/deepseek-harness-for-linux/releases)
+after the tagged build and installed-package checks pass. Until the first binary
+release is published, use the source build below.
+
+Download the installer and its checksum file into the same folder, verify the
+download, then install it. Adjust the version in the filename to match the release:
 
 ```sh
-sudo apt install cargo rustc rustfmt rust-clippy build-essential pkg-config \
+sha256sum --check SHA256SUMS
+sudo apt install './DeepSeek Harness for Linux_0.1.2_amd64.deb'
+```
+
+Open **DeepSeek Harness for Linux** from the applications menu. Installed packages
+include Node and the upstream runtime; no separate Node installation is needed.
+Updates use a newly downloaded package; the app does not update itself.
+
+## Build
+
+Target: **updated Ubuntu 24.04 LTS and 26.04, Linux x86_64**. CI builds the
+installer on 24.04 and checks the same package on both versions, avoiding a
+dependency on the newer distribution's build libraries.
+
+The tested build toolchain is **Node.js 26.10.0, npm 12.1.0, and Rust 1.93.1**
+with the `rustfmt` and `clippy` components. Install Rust using
+[rustup](https://rustup.rs/); Ubuntu 24.04's default Rust packages are older than
+this toolchain. Use an official Node.js distribution that includes its `LICENSE`
+file: preparation bundles the executable and its complete third-party notices.
+npm 12.1.0 enforces the runtime's existing native install-script allowlist.
+
+Install the Ubuntu build libraries:
+
+```sh
+sudo apt install build-essential pkg-config \
   libwebkit2gtk-4.1-dev libssl-dev libxdo-dev \
   libayatana-appindicator3-dev librsvg2-dev curl wget file
 ```
 
 See the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for other distributions.
 
+Both supported Ubuntu versions provide WebKitGTK's **4.1 API**. Current validation
+uses WebKitGTK **2.52.6**; older WebKit versions are untested. Native GUI checks run
+under Xvfb with a fresh profile and no model request. They do not establish GPU
+or Wayland compatibility for every desktop environment.
+
+| OS | Current verification |
+| --- | --- |
+| Ubuntu 24.04.5 LTS x86_64 | Clean source build, 12 Rust tests, backend and all native recovery/tray checks; isolated Docker/Xvfb environment |
+| Ubuntu 26.04.1 x86_64 | Local source build, 12 Rust tests, backend and all native recovery/tray checks; Xvfb environment |
+
+CI also installs the same 24.04-built `.deb` on both systems and repeats the
+native recovery checks. Each job records its tool and WebKit versions in its
+summary and retains its reports. No profile data migrations are required.
+
 Get the source and enter the project directory:
 
 ```sh
 git clone https://github.com/TheIceEagle/deepseek-harness-for-linux.git
 cd deepseek-harness-for-linux
+```
+
+If using rustup, select the tested toolchain inside the project directory:
+
+```sh
+rustup toolchain install 1.93.1 --component rustfmt --component clippy
+rustup override set 1.93.1
 ```
 
 Install the dependencies and start the development app:
@@ -54,6 +109,10 @@ The launcher starts Harness on a dynamically assigned loopback port and waits fo
 Enter your API key in the **original Harness interface**, under **Settings → Models**, when prompted. Do not paste it into this development chat. Model access and usage charges follow your provider account.
 
 Closing the window hides the application and keeps its backend running. Reopen it from the tray; choose **Quit DeepSeek Harness** to stop the backend and exit. Quitting interrupts active work.
+
+The tray's read-only status shows **Workspace running** or **Workspace stopped**.
+Running refers to the local service; it can be idle. If it stops unexpectedly,
+open the app again or use **Try again** on the recovery screen.
 
 Reopening a healthy workspace preserves its current page and unsent draft. If the view is blank or stuck loading, the shell reopens it using the backend's private launch address without stopping a healthy backend. If the backend has stopped, reopening retries startup. The tray's **Reload workspace** action provides a manual way to reload the view; it may discard an unsent draft. An interface that cannot finish startup within 45 seconds returns to the app's retry screen.
 
@@ -103,10 +162,26 @@ This application provides the **Web profile's capabilities**. Features implement
 - The Web sidebar browser is disabled by default and uses an iframe when enabled. Some sites refuse embedding; it does not inherit Electron's embedded browser behavior.
 - Electron's native file dragging, embedded account pages, and desktop-specific integrations do not automatically carry over.
 - This shell has no official DeepSeek desktop updater. Runtime upgrades require an explicit dependency update, verification, and a new build.
+- Model requests and plugin installation are not exercised by the current smoke tests. The package includes Node but does not bundle pnpm.
 
 References: [Harness Web flags, authentication, and readiness](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/bundle/web-app/README.md), [default workspace policy](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/api/workspace-controller/README.md#first-use-workspace), [Web and Electron browser differences](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-sidebar-browser/README.md), [official desktop architecture](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/desktop/README.md). Upstream's current documentation may describe changes newer than the pinned runtime.
 
 ## Validation
+
+The **0.1.2 release-readiness changes** pass formatting, strict Clippy, and all
+**12 Rust tests**. Native tests additionally verify actual tray status across
+startup failure, normal startup, backend exit, restart, and renderer recovery.
+Existing draft preservation and all six reopening/recovery scenarios remain
+covered. Backend checks verify the actual owned HTTP socket binds only to
+`127.0.0.1`, and startup credentials are absent from desktop output, logs, and
+process arguments. The bundled startup page has no unused `core:default` grants;
+the hosted workspace remains unable to invoke desktop startup commands.
+
+Normal push/PR CI tests the pinned runtime on both supported Ubuntu versions.
+Tagged release builds must pass that CI, the package version/tag consistency
+check, and installation/recovery checks before the existing tested artifact is
+published with `SHA256SUMS`. There is no automatic merge or upstream-version
+activation.
 
 The **0.1.1 recovery changes** have passed the following development checks:
 

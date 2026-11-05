@@ -277,6 +277,7 @@ fn open_startup(window: &WebviewWindow, state: &AppState, generation: u64) {
     if !current(state, generation) {
         return;
     }
+    state.set_workspace_running(false);
     state.port.store(0, Ordering::SeqCst);
     if let Ok(mut ready) = state.ready_url.lock() {
         *ready = None;

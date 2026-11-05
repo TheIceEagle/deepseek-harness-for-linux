@@ -15,10 +15,11 @@ use std::time::Instant;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, RunEvent, State, WebviewWindow, WebviewWindowBuilder};
-use url::Url;
+use url::{Host, Url};
 
 struct AppState {
     backend: Arc<Mutex<Backend>>,
+    workspace_status: MenuItem<tauri::Wry>,
     ready_url: Mutex<Option<Url>>,
     port: AtomicU16,
     rendered: AtomicBool,
@@ -35,6 +36,16 @@ struct AppState {
     data_dir: PathBuf,
 }
 
+impl AppState {
+    fn set_workspace_running(&self, running: bool) {
+        let _ = self.workspace_status.set_text(if running {
+            "Workspace running"
+        } else {
+            "Workspace stopped"
+        });
+    }
+}
+
 #[derive(Serialize)]
 struct StartupInfo {
     startup_ms: u64,
@@ -46,6 +57,36 @@ fn bundled_page(url: &Url) -> bool {
         && url.port().is_none()
         && ((url.scheme() == "tauri" && url.host_str() == Some("localhost"))
             || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost")))
+}
+
+fn external_link(url: &Url) -> bool {
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return false;
+    }
+    let loopback = match url.host() {
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => {
+            address.is_loopback()
+                || address
+                    .to_ipv4_mapped()
+                    .is_some_and(|address| address.is_loopback())
+        }
+        Some(Host::Domain(host)) => {
+            let host = host.trim_end_matches('.');
+            host == "localhost" || host.ends_with(".localhost")
+        }
+        None => return false,
+    };
+    // A popup or an in-flight navigation from a stopped backend must not send
+    // its private launch credential to xdg-open or a browser's process arguments.
+    // Keep ordinary local tool links available without their sign-in URLs.
+    !(loopback
+        && url
+            .query_pairs()
+            .any(|(name, _)| name.eq_ignore_ascii_case("token")))
 }
 
 fn require_startup_page(window: &WebviewWindow) -> Result<(), String> {
@@ -78,14 +119,22 @@ async fn start_backend(
 ) -> Result<StartupInfo, String> {
     require_startup_page(&window)?;
     let backend = Arc::clone(&state.backend);
-    let ready = tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         backend
             .lock()
             .map_err(|_| "The workspace process is unavailable. Restart the app.".to_string())?
             .start()
     })
     .await
-    .map_err(|_| "The workspace process could not start. Try again.".to_string())??;
+    .map_err(|_| "The workspace process could not start. Try again.".to_string())
+    .and_then(|result| result);
+    let ready = match result {
+        Ok(ready) => ready,
+        Err(error) => {
+            state.set_workspace_running(false);
+            return Err(error);
+        }
+    };
     let url = Url::parse(&ready.url).map_err(|_| "The workspace returned an invalid address.")?;
     state.port.store(
         url.port()
@@ -97,6 +146,7 @@ async fn start_backend(
         .lock()
         .map_err(|_| "The workspace address is unavailable.")? = Some(url);
     recovery::prepare_workspace(&state);
+    state.set_workspace_running(true);
     metric(&state, "backend_ready", ready.startup_ms.into());
     Ok(StartupInfo {
         startup_ms: ready.startup_ms,
@@ -136,8 +186,16 @@ fn main() {
             }
             let backend = Backend::new(runtime_dir, data_dir.clone());
             let shutdown = backend.shutdown_signal();
+            let workspace_status = MenuItem::with_id(
+                app,
+                "workspace-status",
+                "Workspace stopped",
+                false,
+                None::<&str>,
+            )?;
             app.manage(AppState {
                 backend: Arc::new(Mutex::new(backend)),
+                workspace_status: workspace_status.clone(),
                 ready_url: Mutex::new(None),
                 port: AtomicU16::new(0),
                 rendered: AtomicBool::new(false),
@@ -166,19 +224,13 @@ fn main() {
                     {
                         return true;
                     }
-                    if matches!(url.scheme(), "http" | "https")
-                        && url.username().is_empty()
-                        && url.password().is_none()
-                    {
+                    if external_link(url) {
                         let _ = open::that_detached(url.as_str());
                     }
                     false
                 })
                 .on_new_window(|url, _| {
-                    if matches!(url.scheme(), "http" | "https")
-                        && url.username().is_empty()
-                        && url.password().is_none()
-                    {
+                    if external_link(&url) {
                         let _ = open::that_detached(url.as_str());
                     }
                     tauri::webview::NewWindowResponse::Deny
@@ -187,7 +239,7 @@ fn main() {
             let show = MenuItem::with_id(app, "show", "Open DeepSeek Harness", true, None::<&str>)?;
             let reload = MenuItem::with_id(app, "reload", "Reload workspace", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit DeepSeek Harness", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &reload, &quit])?;
+            let menu = Menu::with_items(app, &[&workspace_status, &show, &reload, &quit])?;
             TrayIconBuilder::new()
                 .icon(
                     app.default_window_icon()
@@ -234,6 +286,7 @@ fn main() {
                 };
                 let running = backend.is_running();
                 if !running && !state.exiting.load(Ordering::SeqCst) {
+                    state.set_workspace_running(false);
                     state.port.store(0, Ordering::SeqCst);
                     state.view_generation.fetch_add(1, Ordering::SeqCst);
                     state.rendered.store(false, Ordering::SeqCst);
@@ -319,4 +372,44 @@ fn main() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_launch_links_never_reach_external_processes() {
+        for candidate in [
+            "http://127.0.0.1:3081/?token=fixture",
+            "http://127.0.0.1:3999/?token=stale-fixture",
+            "http://127.1:3081/?%74oken=encoded-fixture",
+            "http://2130706433:3081/?TOKEN=fixture",
+            "http://localhost:3081/?token=fixture",
+            "http://localhost.:3081/?token=fixture",
+            "https://app.localhost:3081/path?next=1&token=fixture",
+            "http://[::1]:3081/?token=fixture",
+            "http://[::ffff:127.0.0.1]:3081/?token=fixture",
+            "https://127.0.0.1:3081/?token=fixture",
+            "http://user:password@example.com/",
+            "https://%75ser@example.com/",
+            "file:///tmp/workspace",
+            "javascript:alert(1)",
+        ] {
+            assert!(!external_link(&Url::parse(candidate).unwrap()));
+        }
+    }
+
+    #[test]
+    fn ordinary_external_and_local_tool_links_still_open() {
+        for candidate in [
+            "https://www.deepseek.com/",
+            "https://example.com/login?token=service-owned-token",
+            "http://127.0.0.1:8000/docs",
+            "http://localhost:8080/?page=tools",
+            "http://[::1]:8080/",
+        ] {
+            assert!(external_link(&Url::parse(candidate).unwrap()));
+        }
+    }
 }
