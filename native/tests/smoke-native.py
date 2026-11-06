@@ -476,7 +476,7 @@ def run(application):
             first_id = next(session["id"] for session in state()["sessions"] if session["messages"])
             stage = "conversation drafts"
             desktop.set_text("Message", "first draft café")
-            desktop.click("＋  New conversation")
+            desktop.click("+  New conversation")
             wait(lambda: len(state()["sessions"]) == 2, "A second conversation is created")
             desktop.set_text("Message", "second draft")
             desktop.select_conversation(STREAM)
@@ -536,12 +536,31 @@ def run(application):
             chooser = desktop.window("Choose an extension folder")
             chooser_id = desktop.xdo("search", "--onlyvisible", "--pid", str(process.pid), "--name", "Choose an extension folder").splitlines()[-1]
             desktop.xdo("windowfocus", "--sync", chooser_id)
-            desktop.xdo("key", "--clearmodifiers", "ctrl+l")
-            desktop.xdo("type", "--clearmodifiers", "--delay", "0", "--file", "-", text=str(fixture))
+            desktop.xdo("key", "--clearmodifiers", "ctrl+l", "ctrl+a")
+            folder_location = str(fixture) + "/"
+
+            def location_entry():
+                entries = []
+                for node in desktop.walk(chooser):
+                    try:
+                        node.queryEditableText()
+                        if desktop.visible(node):
+                            entries.append(node)
+                    except Exception:
+                        pass
+                return entries[0] if len(entries) == 1 else None
+
+            location = wait(location_entry, "The native chooser exposes one location entry")
+            # Keyboard typing can append a selected common filename prefix
+            # (plugin.) in a folder containing plugin.json and plugin.wasm.
+            # Set the native editable field exactly before accepting it.
+            require(location.queryEditableText().setTextContents(folder_location), "The chooser accepts the existing folder location")
+            require(desktop.text(location) == folder_location, "The chooser location contains the exact existing folder, including its trailing slash")
             desktop.xdo("key", "Return")
-            wait(lambda: desktop.find("Make uppercase", extensions) or desktop.has_text(fixture.name, chooser), "The native chooser resolves the supplied fixture folder")
-            if not desktop.find("Make uppercase", extensions):
-                desktop.click("Install extension", chooser)
+            # SelectFolder accepts an exact directory from its location entry.
+            # Do not click again while asynchronous location completion is
+            # loading: its suggested file prefix can trigger Create Folder.
+            wait(lambda: desktop.find("Make uppercase", extensions), "The native chooser accepts the existing fixture folder")
             stage = "extension execution"
             wait(lambda: desktop.find("Make uppercase", extensions), "The installed extension contributes its command")
             desktop.click("Make uppercase", extensions)

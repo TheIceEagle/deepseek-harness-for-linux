@@ -154,7 +154,7 @@ impl Ui {
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
         sidebar.add_css_class("sidebar");
         sidebar.set_width_request(220);
-        let new_chat = button("＋  New conversation", true);
+        let new_chat = button("+  New conversation", true);
         new_chat.update_property(&[gtk::accessible::Property::Label("New conversation")]);
         sidebar.append(&new_chat);
         sidebar.append(&label("CONVERSATIONS", "sidebar-heading"));

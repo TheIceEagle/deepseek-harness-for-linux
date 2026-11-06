@@ -10,7 +10,8 @@ modify, or share its Harness profile.
 
 ## Build and run
 
-Target platforms are Ubuntu 24.04 LTS and 26.04, x86_64. Use Rust **1.93.1** with
+Tested platforms are Ubuntu **24.04.5 LTS** (GTK 4.14.5) and **26.04.1 LTS**
+(GTK 4.22.4), x86_64, using the same installer built on 24.04. Use Rust **1.93.1** with
 the `rustfmt` and `clippy` components. Install the native development libraries:
 
 ```sh
@@ -118,9 +119,20 @@ sudo apt install './deepseek-harness-native_0.2.0~alpha1_amd64.deb'
 The separate package and desktop entry are named **DeepSeek Harness for Linux
 (Native Preview)**. Installing it does not replace the Tauri package.
 
-No performance improvement is claimed yet. Compare complete process memory,
-startup-to-interactive, streaming, and long-conversation scrolling on the same
-workload before drawing conclusions.
+## Preview measurements
+
+Measured on 2026-11-06 with the same **0.2.0-alpha.1 release** installer built
+with Rust 1.93.1 on Ubuntu 24.04.5. Each run used one native app process, a private
+Xvfb display with software rendering, and five synthetic loopback requests.
+
+| Installed OS | Ready process-tree PSS | After chat/extension workflow |
+| --- | ---: | ---: |
+| Ubuntu 24.04.5, GTK 4.14.5 | 91.7 MiB | 102.4 MiB |
+| Ubuntu 26.04.1, GTK 4.22.4 | 92.8 MiB | 105.5 MiB |
+
+These are point-in-time samples, excluding the test display and fixture server.
+Startup latency, peak memory and live provider latency were not measured. A
+speedup over the original app requires the same workload and measurement method.
 
 See [validation methods](docs/TESTING.md) for the isolated desktop workflow and
 the boundary of the performance reports.

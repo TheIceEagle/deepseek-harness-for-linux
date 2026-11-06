@@ -39,3 +39,21 @@ These checks do not validate a real provider account, billing, physical Wayland
 input methods or GPU drivers. The preview implements chat and explicit text
 extensions; it does not implement model-directed tool calls or existing
 JavaScript plugins.
+
+## Verified preview
+
+On 2026-11-06, native **0.2.0-alpha.1** passed formatting, strict all-target
+Clippy, 38 Rust tests and the complete desktop workflow. The same release
+installer passed the installed workflow on Ubuntu 24.04.5 / GTK 4.14.5 and
+Ubuntu 26.04.1 / GTK 4.22.4. Each desktop run made five local fixture requests.
+The original Tauri application's formatting, strict all-target Clippy and
+12 Rust tests also passed against the main baseline.
+
+The locally tested installer SHA256 is
+`bb9bc2aa6bb7da539f822cd7fc0c00742dd1e428edd91bef6e964a7feed2db52`;
+its installed binary SHA256 on both systems is
+`479cee6faab7aee03632a24c28bf1c47378e66b001c84260c184c385bb6c5800`.
+CI builds its own installer and records its own checksum; package timestamps can
+produce different archive hashes from the same source. The
+[README measurements](../README.md#preview-measurements) describe this local
+release build and workload.
