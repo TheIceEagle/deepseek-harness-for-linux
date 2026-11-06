@@ -1,0 +1,9 @@
+{
+  "api_version": 1,
+  "id": "uppercase",
+  "name": "Uppercase",
+  "description": "Change ASCII letters in your draft to uppercase. Other characters stay unchanged.",
+  "version": "1.0.0",
+  "command": "Make uppercase",
+  "module": "plugin.wasm"
+}
