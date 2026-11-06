@@ -29,6 +29,9 @@ components:
 
 # DeepSeek Harness for Linux Design System
 
+The separate native Rust preview follows [native/DESIGN.md](native/DESIGN.md).
+This document continues to describe the original Tauri startup surface.
+
 ## Overview
 
 ### Creative North Star

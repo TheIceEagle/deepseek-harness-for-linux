@@ -4,6 +4,11 @@ runtime/NODE-LICENSE
 runtime/node_modules/
 src-tauri/target/
 src-tauri/gen/
+native/target/
+native/artifacts/
+native/dist/
+native/**/__pycache__/
+native/examples/*/plugin.wasm
 artifacts/
 *.log
 .impeccable/

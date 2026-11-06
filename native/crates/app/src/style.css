@@ -1,0 +1,58 @@
+/* Canonical native palette; native/DESIGN.md mirrors these semantic colors. */
+@define-color app_bg #f7f9fc;
+@define-color surface #ffffff;
+@define-color ink #18243b;
+@define-color muted #52617a;
+@define-color accent #315fd8;
+@define-color accent_hover #244cb7;
+@define-color line #dce3ef;
+@define-color tint #edf2ff;
+@define-color danger #a62c36;
+@define-color scroll_thumb #8a9ab4;
+@define-color scroll_track #e8edf5;
+
+window.native { background: @surface; color: @ink; font-family: Ubuntu, Cantarell, sans-serif; font-size: 14px; }
+headerbar { background: @surface; border-bottom: 1px solid @line; box-shadow: none; min-height: 48px; }
+.app-title { font-weight: 600; font-size: 14px; }
+.preview { color: @muted; font-size: 11px; background: @app_bg; border-radius: 5px; padding: 4px 7px; }
+.sidebar { background: @app_bg; border-right: 1px solid @line; padding: 18px 12px 12px; }
+.sidebar-heading { color: @muted; font-size: 11px; font-weight: 600; margin: 18px 8px 10px; }
+.session-list { background: transparent; }
+.session-list row { border-radius: 8px; margin: 2px 0; padding: 11px 9px; }
+.session-list row:selected { background: @tint; color: @accent; }
+.session-list row:hover { background: alpha(@accent, 0.07); }
+.sidebar-footer { color: @muted; font-size: 11px; padding: 8px; }
+button { border-radius: 8px; min-height: 32px; padding: 5px 12px; box-shadow: none; }
+button.primary { background: @accent; color: white; border: 1px solid @accent; font-weight: 600; }
+button.primary:hover { background: @accent_hover; }
+button.primary:active { background: shade(@accent_hover, 0.9); }
+button:disabled { opacity: 0.5; }
+button:focus-visible, entry:focus-visible, textview:focus-visible { outline: 2px solid @accent; outline-offset: 2px; }
+.model-button { color: @muted; background: transparent; border-color: transparent; }
+.message-row { padding: 22px 36px; border-bottom: 1px solid alpha(@line, 0.7); }
+.user-message { background: alpha(@tint, 0.45); }
+.message-author { color: @accent; font-size: 13px; font-weight: 700; }
+.message-state { color: @muted; font-size: 11px; }
+.message-body, .message-body text { background: transparent; color: @ink; font-size: 16px; }
+.message-body { padding: 0; }
+.conversation { background: @surface; }
+.history-pager { padding: 6px 20px; border-bottom: 1px solid @line; background: @app_bg; }
+.empty-title { font-size: 29px; font-weight: 500; }
+.empty-copy { color: @muted; font-size: 15px; }
+.empty-mark { color: @accent; font-size: 45px; font-weight: 500; margin-bottom: 16px; }
+.composer-area { border-top: 1px solid @line; background: @surface; padding: 16px 24px 8px; }
+.composer-frame { border: 1px solid @line; border-radius: 12px; background: @app_bg; }
+.composer, .composer text { background: transparent; color: @ink; font-size: 15px; }
+.composer { padding: 12px 14px; }
+.composer-actions { padding: 7px 10px; }
+.helper { color: @muted; font-size: 11px; }
+.notice { color: @muted; font-size: 12px; padding: 7px 4px; }
+.notice.error { color: @danger; }
+.dialog-content { padding: 22px; }
+.section-title { font-size: 19px; font-weight: 600; margin-bottom: 6px; }
+.field-label { font-weight: 600; margin-top: 12px; margin-bottom: 5px; }
+.plugin-row { padding: 14px 0; border-bottom: 1px solid @line; }
+scrollbar { background-color: @scroll_track; }
+scrollbar slider { background-color: @scroll_thumb; border-radius: 8px; min-width: 7px; min-height: 7px; }
+scrollbar slider:hover { background-color: @muted; }
+scrollbar slider:active { background-color: @accent; }

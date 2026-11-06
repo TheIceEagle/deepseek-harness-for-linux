@@ -1,0 +1,9 @@
+{
+  "profile": "product-admin",
+  "sourceRoots": ["crates/app/src"],
+  "locale": "en",
+  "canonicalMap": "DESIGN.md",
+  "requiredCapabilities": ["Form", "Select/Listbox", "Scrollbar"],
+  "ownership": { "Select/Listbox": "native" },
+  "evidence": { "crudFullFlow": "tests/smoke-native.py", "failurePaths": "tests/smoke-native.py" }
+}

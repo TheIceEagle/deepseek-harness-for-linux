@@ -4,6 +4,12 @@
 
 An Ubuntu desktop shell for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), using Rust and Tauri. It starts the original Harness Web backend and displays its original interface in a desktop window. The agent, models, tools, settings, and conversation UI stay upstream.
 
+A separate [native Rust client preview](native/README.md) is being developed in
+`native/`: GTK4 interface, Rust streaming backend, private conversation storage,
+and installable WASM text extensions. It uses no Node or WebView. This is an
+independent implementation with its own profile and plugin contract, rather than
+full compatibility with the upstream Harness agent and JavaScript plugins.
+
 The npm runtime is pinned to **`@deepseek-ai/dsh@0.2.1-rc.5`**. This project is independent of DeepSeek's official desktop distribution. Four transitive dependencies are overridden to patched versions: `undici@8.12.2`, `zod@4.6.7`, `fflate@0.8.3`, and `@modelcontextprotocol/client@2.3.0`.
 
 The desktop shell is [MIT licensed](LICENSE). See
