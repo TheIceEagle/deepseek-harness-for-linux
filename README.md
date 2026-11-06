@@ -27,7 +27,7 @@ sudo apt install './DeepSeek Harness for Linux_0.1.2_amd64.deb'
 ```
 
 Open **DeepSeek Harness for Linux** from the applications menu. Installed packages
-include Node and the upstream runtime; no separate Node installation is needed.
+include Node, pnpm, and the upstream runtime; no separate Node or pnpm installation is needed.
 Updates use a newly downloaded package; the app does not update itself.
 
 ## Build
@@ -60,8 +60,8 @@ or Wayland compatibility for every desktop environment.
 
 | OS | Current verification |
 | --- | --- |
-| Ubuntu 24.04.5 LTS x86_64 | Clean source build, 12 Rust tests, backend and all native recovery/tray checks; isolated Docker/Xvfb environment |
-| Ubuntu 26.04.1 x86_64 | Local source build, 12 Rust tests, backend and all native recovery/tray checks; Xvfb environment |
+| Ubuntu 24.04.5 LTS x86_64 | Clean source build, 14 Rust tests, backend and all native recovery/tray checks; isolated Docker/Xvfb environment |
+| Ubuntu 26.04.1 x86_64 | Local source build, 14 Rust tests, backend and all native recovery/tray checks; Xvfb environment |
 
 CI also installs the same 24.04-built `.deb` on both systems and repeats the
 native recovery checks. Each job records its tool and WebKit versions in its
@@ -95,7 +95,7 @@ To create the Ubuntu installer:
 npm run build
 ```
 
-The `.deb` is written under `src-tauri/target/release/bundle/deb/`; the current installer is approximately **176 MiB**. Build preparation copies the current Node executable into the runtime; use a Node installation suitable for the target machine. The package includes Node and the installed Harness dependencies, so an installed application does not need a separate Node installation.
+The `.deb` is written under `src-tauri/target/release/bundle/deb/`. Build preparation copies the current Node executable into the runtime; use a Node installation suitable for the target machine. The package includes Node, pinned pnpm **11.28.11**, and the installed Harness dependencies, so an installed application does not need a separate Node or pnpm installation.
 
 Install the generated package with Ubuntu's package installer, then open **DeepSeek Harness for Linux** from the applications menu.
 
@@ -107,6 +107,12 @@ application identifier and saved-profile location remain the same.
 The launcher starts Harness on a dynamically assigned loopback port and waits for its authenticated startup URL before opening the workspace. The service is bound to `127.0.0.1`.
 
 Enter your API key in the **original Harness interface**, under **Settings → Models**, when prompted. Do not paste it into this development chat. Model access and usage charges follow your provider account.
+
+Install and remove plugins through the original Harness **Plugins** page. The
+desktop launcher supplies its bundled Node and pnpm to the upstream plugin
+manager. Plugins fetched from Git or requiring native compilation can still
+need Git or build tools installed separately. Harness's existing plugin and
+dependency-script approval rules remain in effect.
 
 Closing the window hides the application and keeps its backend running. Reopen it from the tray; choose **Quit DeepSeek Harness** to stop the backend and exit. Quitting interrupts active work.
 
@@ -162,14 +168,14 @@ This application provides the **Web profile's capabilities**. Features implement
 - The Web sidebar browser is disabled by default and uses an iframe when enabled. Some sites refuse embedding; it does not inherit Electron's embedded browser behavior.
 - Electron's native file dragging, embedded account pages, and desktop-specific integrations do not automatically carry over.
 - This shell has no official DeepSeek desktop updater. Runtime upgrades require an explicit dependency update, verification, and a new build.
-- Model requests and plugin installation are not exercised by the current smoke tests. The package includes Node but does not bundle pnpm.
+- Workflow tests use a local simulated model service and a harmless local plugin. Live provider requests, registry/Git plugin downloads, native dependency builds, and MCP/OAuth connections are not exercised by those tests.
 
 References: [Harness Web flags, authentication, and readiness](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/bundle/web-app/README.md), [default workspace policy](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/api/workspace-controller/README.md#first-use-workspace), [Web and Electron browser differences](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-sidebar-browser/README.md), [official desktop architecture](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/desktop/README.md). Upstream's current documentation may describe changes newer than the pinned runtime.
 
 ## Validation
 
 The **0.1.2 release-readiness changes** pass formatting, strict Clippy, and all
-**12 Rust tests**. Native tests additionally verify actual tray status across
+**14 Rust tests**. Native tests additionally verify actual tray status across
 startup failure, normal startup, backend exit, restart, and renderer recovery.
 Existing draft preservation and all six reopening/recovery scenarios remain
 covered. Backend checks verify the actual owned HTTP socket binds only to
@@ -182,6 +188,20 @@ Tagged release builds must pass that CI, the package version/tag consistency
 check, and installation/recovery checks before the existing tested artifact is
 published with `SHA256SUMS`. There is no automatic merge or upstream-version
 activation.
+
+The installed-package workflow test uses a fresh profile, synthetic local model
+responses, and deliberately broken system Node/pnpm commands. It checks sending
+and streaming in the original chat interface, stopping generation, real file
+read/write tools, conversation restoration after a renderer reload and backend
+restart, and local plugin installation, activation, and removal. It makes no
+paid model request and does not read the user's saved profile or credentials.
+
+Run it against a development build or the installed package:
+
+```sh
+npm run test:workflow
+HARNESS_TEST_APPLICATION=/usr/bin/harness-for-linux npm run test:workflow
+```
 
 The **0.1.1 recovery changes** have passed the following development checks:
 
@@ -211,8 +231,8 @@ describe the preceding **0.1.0 release**, before the recovery changes:
 - `npm run build` produced the Ubuntu installer; `sudo dpkg -i` installed it successfully. `npm run tauri -- bundle --bundles deb` refreshed the final dependency metadata.
 - Static UI audit: no findings. DESIGN.md lint: no errors (seven informational orphan-token warnings because CSS is canonical).
 
-Model requests require an API key and were not tested. No comparison with Electron
-or cloud generation speedup has been measured.
+Live provider requests require an API key and were not tested. No comparison with
+Electron or cloud generation speedup has been measured.
 
 The smoke scripts and their reports are in `scripts/` and `artifacts/`. Desktop
 tests need `xvfb`, `webkitgtk-webdriver` and `cargo install tauri-driver --locked`.

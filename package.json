@@ -10,6 +10,7 @@
     "test:backend": "cargo test --manifest-path src-tauri/Cargo.toml --jobs 2",
     "test:runtime": "node scripts/smoke-backend.mjs",
     "test:desktop": "node scripts/smoke-desktop.mjs",
+    "test:workflow": "HARNESS_TEST_WORKFLOW=1 node scripts/smoke-desktop.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {
