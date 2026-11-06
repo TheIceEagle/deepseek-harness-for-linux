@@ -10,9 +10,9 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const profile = await mkdtemp(join(tmpdir(), 'harness-backend-smoke-'));
 const started = performance.now();
 const child = spawn(join(root, 'runtime/node'), [
-  join(root, 'runtime/node_modules/@deepseek-ai/dsh/lib/bin.js'),
+  join(root, 'runtime/launch.mjs'),
   'web', '--no-open', '--host', '127.0.0.1', '--port', '0',
-], { detached: true, cwd: profile, env: { ...process.env, DSH_HOME: join(profile, 'home') }, stdio: ['ignore', 'pipe', 'pipe'] });
+], { detached: true, cwd: profile, env: { ...process.env, PATH: `${join(root, 'runtime')}:${process.env.PATH || ''}`, DSH_HOME: join(profile, 'home') }, stdio: ['ignore', 'pipe', 'pipe'] });
 child.stderr.resume();
 let timer;
 try {

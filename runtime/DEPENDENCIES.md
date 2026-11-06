@@ -23,3 +23,19 @@ dependency tree. Dependabot proposes root npm, runtime npm, Cargo, and GitHub
 Actions updates for review; no automatic merging is configured. Runtime updates
 must also review the exact native-package versions in `allowScripts` and run the
 smoke tests without globally enabling install scripts.
+
+## Bundled plugin package manager
+
+The desktop runtime also pins `pnpm@11.28.11`. The pinned Harness plugin manager
+uses pnpm for installation, removal, and registry inspection. Bundling its
+JavaScript distribution beside Node avoids requiring a separate developer-tool
+installation and retains the pnpm 11 build-script approval behavior understood
+by this Harness release.
+
+`launch.mjs` supplies the executable through Harness's public packaged-launcher
+API. Package operations use the bundled Node executable and pnpm entry point;
+only their `PATH` is added to Harness's scrubbed subprocess environment. The
+backend also puts its bundled Node first on its own `PATH` for Node-based tools.
+The desktop session's environment is unchanged. Update this pin with the runtime
+audit and the installed-package workflow test, including plugin installation,
+removal, and the existing dependency-script approval policy.

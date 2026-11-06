@@ -49,6 +49,8 @@ jobs:
         run: HARNESS_TEST_CRASH=1 npm run test:desktop
       - name: Check reopening, drafts, loading and renderer recovery
         run: HARNESS_TEST_REOPEN=1 HARNESS_TEST_WEBKIT_CRASH=1 npm run test:desktop
+      - name: Check chat, tools, persistence and plugin installation
+        run: npm run test:workflow
       - name: Retain test reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -141,10 +143,14 @@ jobs:
           test -s "$installed_resources/licenses/THIRD_PARTY_NOTICES.md"
           test -s "$installed_resources/licenses/deepseek-harness-MIT.txt"
           test "$("$installed_resources/runtime/node" --version)" = "v26.10.0"
+          test -s "$installed_resources/runtime/node_modules/pnpm/LICENSE"
+          test "$("$installed_resources/runtime/node" "$installed_resources/runtime/node_modules/pnpm/bin/pnpm.mjs" --version)" = "11.28.11"
       - name: Check installed backend crash and manual retry
         run: HARNESS_TEST_APPLICATION=/usr/bin/harness-for-linux HARNESS_TEST_CRASH=1 npm run test:desktop
       - name: Check installed reopening and renderer recovery
         run: HARNESS_TEST_APPLICATION=/usr/bin/harness-for-linux HARNESS_TEST_REOPEN=1 HARNESS_TEST_WEBKIT_CRASH=1 npm run test:desktop
+      - name: Check installed chat, tools, persistence and plugin installation
+        run: HARNESS_TEST_APPLICATION=/usr/bin/harness-for-linux npm run test:workflow
       - name: Retain installed-package reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

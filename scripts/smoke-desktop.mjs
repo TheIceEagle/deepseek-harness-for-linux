@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Builder, By } from 'selenium-webdriver';
+import { prepareWorkflow } from './workflow-fixture.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const application = process.env.HARNESS_TEST_APPLICATION || join(root, 'src-tauri/target/debug/harness-for-linux');
@@ -20,10 +21,11 @@ await access(application);
 await mkdir(config, { recursive: true });
 await mkdir(documents, { recursive: true });
 await writeFile(join(config, 'user-dirs.dirs'), `XDG_DOCUMENTS_DIR="${documents}"\n`);
-const xvfb = spawn('Xvfb', [display, '-screen', '0', '1440x1000x24'], { stdio: 'ignore' });
-await delay(300);
 const env = { ...process.env, DISPLAY: display, GDK_BACKEND: 'x11', XDG_DATA_HOME: data, XDG_CONFIG_HOME: config, XDG_CACHE_HOME: join(scratch, 'cache') };
 if (process.env.HARNESS_TEST_FAILURE === '1') env.HARNESS_TEST_RUNTIME_DIR = join(scratch, 'missing-runtime');
+const workflow = process.env.HARNESS_TEST_WORKFLOW === '1' ? await prepareWorkflow({ scratch, data, env }) : undefined;
+const xvfb = spawn('Xvfb', [display, '-screen', '0', '1440x1000x24'], { stdio: 'ignore' });
+await delay(300);
 // A separate session bus prevents the single-instance plugin from connecting
 // this test to an app the user already has open on their desktop.
 const server = spawn('dbus-run-session', ['--', join(homedir(), '.cargo/bin/tauri-driver'), '--port', '4446', '--native-port', '4447'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
@@ -146,6 +148,26 @@ try {
       const status = await readFile(`/proc/${pid}/status`, 'utf8');
       assert.equal(Number(status.match(/^PPid:\s+(\d+)/m)?.[1]), appPid, 'Only a child of the isolated test app may be stopped');
     };
+    if (workflow) {
+      const restartBackend = async () => {
+        const backendPid = await latestBackendPid();
+        await requireOwnedProcess(backendPid);
+        process.kill(backendPid, 'SIGTERM');
+        await driver.wait(async () => {
+          try {
+            return !(await processRunning(backendPid)) && await driver.executeScript("const retry = document.querySelector('#retry'); return location.hostname !== '127.0.0.1' && Boolean(retry && !retry.hidden && !retry.disabled)");
+          } catch { return false; }
+        }, 15000, 'The workflow backend must reach its retry screen');
+        await assertTrayStatus('Workspace stopped');
+        await driver.findElement(By.id('retry')).click();
+        await driver.wait(workspaceVisible, 60000);
+        await assertTrayStatus('Workspace running');
+        assert.notEqual(await latestBackendPid(), backendPid, 'Persistence is checked against a new backend process');
+      };
+      const workflowReport = await workflow.run(driver, { restartBackend, workspaceVisible });
+      await writeFile(join(artifacts, 'desktop-workflow.json'), `${JSON.stringify(workflowReport, null, 2)}\n`);
+      console.log(JSON.stringify(workflowReport));
+    }
     if (process.env.HARNESS_TEST_REOPEN === '1') {
       let nativeScreenshot = false;
       const reopenEnvironment = { ...privateBusEnvironment };
@@ -341,6 +363,7 @@ image.savev(sys.argv[1], 'png', [], [])
   if (driver) { try { await driver.quit(); } catch {} }
   try { process.kill(-server.pid, 'SIGTERM'); } catch {}
   xvfb.kill('SIGTERM');
+  await workflow?.close();
   await delay(500);
   await rm(scratch, { recursive: true, force: true });
 }
