@@ -76,12 +76,24 @@ impl Backend {
         self.stop();
 
         let node = self.runtime_dir.join("node");
-        let entry = self
+        let entry = self.runtime_dir.join("launch.mjs");
+        let upstream = self
             .runtime_dir
             .join("node_modules/@deepseek-ai/dsh/lib/bin.js");
-        if !node.is_file() || !entry.is_file() {
+        let pnpm = self.runtime_dir.join("node_modules/pnpm/bin/pnpm.mjs");
+        if !node.is_file() || !entry.is_file() || !upstream.is_file() || !pnpm.is_file() {
             return Err("The bundled Harness runtime is missing. Prepare the runtime and rebuild the application.".into());
         }
+
+        // Node-based tools and plugin lifecycle scripts must resolve the shipped
+        // Node even when the user has no developer tools installed. This changes
+        // only the owned backend's environment, never the desktop session PATH.
+        let mut paths = vec![self.runtime_dir.clone()];
+        if let Some(path) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&path));
+        }
+        let path = std::env::join_paths(paths)
+            .map_err(|_| "The bundled runtime path cannot be used to start Harness.".to_string())?;
 
         let home = self.data_dir.join("harness");
         for directory in [&self.data_dir, &home] {
@@ -97,6 +109,7 @@ impl Backend {
             .arg(entry)
             .args(["web", "--no-open", "--host", "127.0.0.1", "--port", "0"])
             .env("DSH_HOME", &home)
+            .env("PATH", path)
             .current_dir(&self.data_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -363,6 +376,9 @@ mod tests {
             let runtime = path.join("runtime");
             fs::create_dir_all(runtime.join("node_modules/@deepseek-ai/dsh/lib")).unwrap();
             fs::write(runtime.join("node_modules/@deepseek-ai/dsh/lib/bin.js"), "").unwrap();
+            fs::create_dir_all(runtime.join("node_modules/pnpm/bin")).unwrap();
+            fs::write(runtime.join("node_modules/pnpm/bin/pnpm.mjs"), "").unwrap();
+            fs::write(runtime.join("launch.mjs"), "").unwrap();
             let node = runtime.join("node");
             fs::write(&node, format!("#!/bin/sh\n{script}\n")).unwrap();
             fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
@@ -423,10 +439,7 @@ mod tests {
         );
         let ready = fixture.backend.start().unwrap();
         let arguments = fs::read_to_string(fixture.path.join("data/arguments")).unwrap();
-        let entry = fixture
-            .backend
-            .runtime_dir
-            .join("node_modules/@deepseek-ai/dsh/lib/bin.js");
+        let entry = fixture.backend.runtime_dir.join("launch.mjs");
         assert_eq!(
             arguments.lines().collect::<Vec<_>>(),
             [
@@ -444,6 +457,34 @@ mod tests {
             let command_line = fs::read(format!("/proc/{}/cmdline", ready.pid)).unwrap();
             assert!(!String::from_utf8_lossy(&command_line).contains("token="));
             assert!(!String::from_utf8_lossy(&command_line).contains("argument-fixture"));
+        }
+    }
+
+    #[test]
+    fn child_tools_resolve_the_bundled_node() {
+        let mut fixture = Fixture::new(
+            "if [ \"$1\" = --tool-check ]; then\n  echo bundled-node > \"$DSH_HOME/../tool-result\"\n  exit 0\nfi\nnode --tool-check\necho 'dsh web: http://127.0.0.1:3081/?token=tool-fixture'\nsleep 60",
+        );
+        fixture.backend.start().unwrap();
+        assert_eq!(
+            fs::read_to_string(fixture.path.join("data/tool-result")).unwrap(),
+            "bundled-node\n"
+        );
+    }
+
+    #[test]
+    fn missing_package_manager_returns_actionable_error() {
+        let mut fixture = Fixture::new("exit 0");
+        fs::remove_file(
+            fixture
+                .backend
+                .runtime_dir
+                .join("node_modules/pnpm/bin/pnpm.mjs"),
+        )
+        .unwrap();
+        match fixture.backend.start() {
+            Err(message) => assert!(message.contains("runtime is missing")),
+            Ok(_) => panic!("incomplete runtime unexpectedly started"),
         }
     }
 

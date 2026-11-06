@@ -17,3 +17,9 @@ third-party notices, into the bundled runtime as `runtime/NODE-LICENSE`.
 Installers also include this notice, the shell's MIT license, and the upstream
 Harness license under the application's `licenses/` resources directory.
 The installed npm packages retain their accompanying license files.
+
+The runtime also includes [pnpm](https://github.com/pnpm/pnpm), pinned to
+`11.28.11`, for upstream Harness's plugin-management operations. pnpm is MIT
+licensed; its accompanying `LICENSE` remains under `runtime/node_modules/pnpm/`.
+The package manager runs with the bundled
+Node executable and does not require a system pnpm installation.
