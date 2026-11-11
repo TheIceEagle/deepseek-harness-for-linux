@@ -1,8 +1,10 @@
 use crate::dialogs::{self, Dialog};
 use crate::messages::Messages;
+use crate::tools::{ToolHub, ToolSet};
 use gtk::{gdk, glib, prelude::*};
 use harness_native_core::{
-    CoreError, MessageStatus, Provider, Role, Settings, Store, StreamEvent, StreamOutcome,
+    AgentEvent, AgentOutcome, CoreError, MessageStatus, Provider, Role, Settings, Store,
+    StreamOutcome, ToolCall, ToolDecision, ToolRound,
 };
 use harness_native_plugins::{PluginManager, PluginManifest};
 use std::{
@@ -23,14 +25,17 @@ struct ActiveReply {
     message: String,
     content: String,
     model: String,
-    events: mpsc::Receiver<StreamEvent>,
-    result: oneshot::Receiver<Result<StreamOutcome, CoreError>>,
+    events: mpsc::Receiver<AgentEvent>,
+    trace: Vec<ToolRound>,
+    tools: Arc<ToolSet>,
+    result: oneshot::Receiver<Result<AgentOutcome, CoreError>>,
     cancel: CancellationToken,
     checkpoint: Instant,
 }
 
 #[derive(Clone)]
 struct PendingReply {
+    trace: Vec<ToolRound>,
     session: String,
     content: String,
     status: MessageStatus,
@@ -42,6 +47,10 @@ pub struct Ui {
     pub window: gtk::ApplicationWindow,
     store: RefCell<Store>,
     plugins: PluginManager,
+    tools: Arc<ToolHub>,
+    tool_button: gtk::Button,
+    activity_button: gtk::Button,
+    approval: RefCell<Option<Dialog>>,
     runtime: Arc<Runtime>,
     selected: RefCell<String>,
     sessions: gtk::ListBox,
@@ -106,6 +115,7 @@ impl Ui {
         }
         let selected = store.sessions()[0].id.clone();
         let plugins = PluginManager::new(&profile).map_err(|error| error.to_string())?;
+        let tools = ToolHub::open(&profile, plugins.clone())?;
         let runtime = Arc::new(
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -171,6 +181,8 @@ impl Ui {
         let plugin_button = button("Extensions", false);
         plugin_button.set_tooltip_text(Some("Install and run native extensions"));
         sidebar.append(&plugin_button);
+        let tool_button = button("Tool connections", false);
+        sidebar.append(&tool_button);
         let footer = label("Unofficial community client", "sidebar-footer");
         footer.set_wrap(true);
         sidebar.append(&footer);
@@ -250,6 +262,9 @@ impl Ui {
         let retry = button("Retry reply", false);
         retry.set_visible(false);
         status_row.append(&notice);
+        let activity_button = button("Tool activity", false);
+        activity_button.set_visible(false);
+        status_row.append(&activity_button);
         status_row.append(&retry);
         composer_area.append(&status_row);
         main.append(&composer_area);
@@ -260,6 +275,10 @@ impl Ui {
             window,
             store: RefCell::new(store),
             plugins,
+            tools,
+            tool_button,
+            activity_button,
+            approval: RefCell::new(None),
             runtime,
             selected: RefCell::new(selected),
             sessions,
@@ -414,6 +433,18 @@ impl Ui {
             }
         });
         let weak = Rc::downgrade(self);
+        self.tool_button.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                crate::tools_ui::show(&ui.window, ui.tools.clone(), ui.runtime.clone());
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.activity_button.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.tool_activity();
+            }
+        });
+        let weak = Rc::downgrade(self);
         self.window.connect_close_request(move |_| {
             if let Some(ui) = weak.upgrade() {
                 if !ui.flush_draft() {
@@ -452,6 +483,21 @@ impl Ui {
             .set_visible_child_name(if busy { "stop" } else { "send" });
         self.new_chat.set_sensitive(!busy && !unsaved);
         self.sessions.set_sensitive(!busy && !unsaved);
+        self.tool_button.set_sensitive(!busy && !unsaved);
+        self.activity_button.set_sensitive(!busy);
+        self.activity_button.set_visible(
+            self.store
+                .borrow()
+                .session(&self.selected.borrow())
+                .is_some_and(|session| {
+                    session.messages.iter().any(|message| {
+                        message
+                            .tool_trace
+                            .iter()
+                            .any(|round| !round.tool_calls.is_empty())
+                    })
+                }),
+        );
         self.settings_button.set_sensitive(!busy);
         self.model_button.set_sensitive(!busy);
         self.plugin_button
@@ -502,6 +548,13 @@ impl Ui {
         let store = self.store.borrow();
         if let Some(session) = store.session(&self.selected.borrow()) {
             self.messages.replace(&session.messages);
+            self.activity_button
+                .set_visible(session.messages.iter().any(|message| {
+                    message
+                        .tool_trace
+                        .iter()
+                        .any(|round| !round.tool_calls.is_empty())
+                }));
             self.history
                 .set_visible_child_name(if session.messages.is_empty() {
                     "empty"
@@ -589,6 +642,13 @@ impl Ui {
         if retry && !self.flush_draft() {
             return;
         }
+        let tools = match self.tools.snapshot() {
+            Ok(tools) => tools,
+            Err(error) => {
+                self.status(&error, true);
+                return;
+            }
+        };
         let settings = self.store.borrow().settings().clone();
         if self.key.borrow().trim().is_empty()
             && !settings.base_url.starts_with("http://127.0.0.1")
@@ -627,7 +687,9 @@ impl Ui {
                 let mut history = session.messages.clone();
                 history.pop();
                 while history.last().is_some_and(|message| {
-                    message.role == Role::Assistant && message.status != MessageStatus::Complete
+                    message.role == Role::Assistant
+                        && message.status != MessageStatus::Complete
+                        && message.tool_trace.is_empty()
                 }) {
                     history.pop();
                 }
@@ -649,10 +711,20 @@ impl Ui {
         let token = cancel.clone();
         let key = self.key.borrow().clone();
         let model = settings.model.clone();
+        let catalog = tools.clone();
         self.runtime.spawn(async move {
+            let _cancel_on_exit = token.clone().drop_guard();
             let outcome = provider
-                .stream(&settings, &key, &snapshot, sender, token)
+                .run_agent(
+                    &settings,
+                    &key,
+                    &snapshot,
+                    &catalog.definitions,
+                    sender,
+                    token.clone(),
+                )
                 .await;
+            token.cancel();
             let _ = result_sender.send(outcome);
         });
         *self.active.borrow_mut() = Some(ActiveReply {
@@ -661,6 +733,8 @@ impl Ui {
             content: String::new(),
             model,
             events: receiver,
+            trace: Vec::new(),
+            tools,
             result,
             cancel,
             checkpoint: Instant::now(),
@@ -672,7 +746,7 @@ impl Ui {
         self.controls();
     }
 
-    fn poll(&self) {
+    fn poll(self: &Rc<Self>) {
         if self
             .draft_changed
             .borrow()
@@ -683,13 +757,40 @@ impl Ui {
         }
         let follow = self.messages.near_bottom();
         let mut finished = None;
+        let mut request = None;
         {
-            let mut reply = self.active.borrow_mut();
-            if let Some(reply) = reply.as_mut() {
+            let mut active = self.active.borrow_mut();
+            if let Some(reply) = active.as_mut() {
                 let mut changed = false;
-                while let Ok(StreamEvent::Delta(delta)) = reply.events.try_recv() {
-                    reply.content.push_str(&delta);
-                    changed = true;
+                while let Ok(event) = reply.events.try_recv() {
+                    match event {
+                        AgentEvent::Delta(delta) => {
+                            reply.content.push_str(&delta);
+                            changed = true;
+                        }
+                        AgentEvent::Checkpoint { trace, ack } => {
+                            reply.trace = trace;
+                            let saved = self.store.borrow_mut().replace_last_agent(
+                                &reply.session,
+                                &reply.content,
+                                MessageStatus::Streaming,
+                                reply.trace.clone(),
+                            );
+                            let success = saved.is_ok();
+                            let _ = ack.send(success);
+                            if let Err(error) = saved {
+                                reply.cancel.cancel();
+                                self.status(&error.to_string(), true);
+                            }
+                        }
+                        AgentEvent::ToolRequest {
+                            call,
+                            reply: decision,
+                        } => {
+                            request =
+                                Some((call, decision, reply.tools.clone(), reply.cancel.clone()));
+                        }
+                    }
                 }
                 if changed {
                     self.messages.update_last(
@@ -706,10 +807,11 @@ impl Ui {
                     }
                 }
                 if changed && reply.checkpoint.elapsed() >= Duration::from_secs(1) {
-                    if let Err(error) = self.store.borrow_mut().replace_last_assistant(
+                    if let Err(error) = self.store.borrow_mut().replace_last_agent(
                         &reply.session,
                         &reply.content,
                         MessageStatus::Streaming,
+                        reply.trace.clone(),
                     ) {
                         reply.cancel.cancel();
                         self.status(&error.to_string(), true);
@@ -720,34 +822,45 @@ impl Ui {
                     Ok(result) => finished = Some(result.map_err(|error| error.to_string())),
                     Err(oneshot::error::TryRecvError::Closed) => {
                         finished = Some(Err(
-                            "The reply worker stopped. Retry the reply to continue.".to_owned(),
+                            "The reply worker stopped. Review saved tool activity before retrying."
+                                .to_owned(),
                         ))
                     }
                     Err(oneshot::error::TryRecvError::Empty) => {}
                 }
             }
         }
+        if let Some((call, decision, tools, cancel)) = request {
+            self.approve_tool(call, decision, tools, cancel);
+        }
         if let Some(result) = finished {
+            if let Some(dialog) = self.approval.borrow_mut().take() {
+                dialog.close();
+            }
             if let Some(mut reply) = self.active.borrow_mut().take() {
-                while let Ok(StreamEvent::Delta(delta)) = reply.events.try_recv() {
-                    reply.content.push_str(&delta);
-                }
+                drain_reply(&mut reply);
                 let (status, text, error) = match result {
-                    Ok(StreamOutcome::Completed) => (
-                        MessageStatus::Complete,
-                        "Reply saved locally.".to_owned(),
-                        false,
-                    ),
-                    Ok(StreamOutcome::Cancelled) => (
-                        MessageStatus::Cancelled,
-                        "Stopped. The partial reply is saved.".to_owned(),
-                        false,
-                    ),
-                    Err(error) => (MessageStatus::Error, error.to_string(), true),
+                    Ok(outcome) => {
+                        reply.trace = outcome.trace;
+                        match outcome.outcome {
+                            StreamOutcome::Completed => (
+                                MessageStatus::Complete,
+                                "Reply saved locally.".to_owned(),
+                                false,
+                            ),
+                            StreamOutcome::Cancelled => (
+                                MessageStatus::Cancelled,
+                                "Stopped. Review saved tool activity before retrying.".to_owned(),
+                                false,
+                            ),
+                        }
+                    }
+                    Err(error) => (MessageStatus::Error, error, true),
                 };
                 self.messages
                     .update_last(&reply.message, &reply.content, status);
                 *self.pending_reply.borrow_mut() = Some(PendingReply {
+                    trace: reply.trace,
                     session: reply.session,
                     content: reply.content,
                     status,
@@ -763,14 +876,152 @@ impl Ui {
         }
     }
 
+    fn approve_tool(
+        self: &Rc<Self>,
+        call: ToolCall,
+        decision: oneshot::Sender<ToolDecision>,
+        tools: Arc<ToolSet>,
+        cancel: CancellationToken,
+    ) {
+        if cancel.is_cancelled() {
+            let _ = decision.send(ToolDecision::Denied);
+            return;
+        }
+        let dialog = Dialog::new("Allow tool call?", &self.window, 600);
+        dialog.add_button("Deny", gtk::ResponseType::Cancel);
+        dialog.add_button("Stop task", gtk::ResponseType::Reject);
+        dialog.add_button("Allow once", gtk::ResponseType::Accept);
+        dialog.set_default_response(gtk::ResponseType::Cancel);
+        let area = dialog.content_area();
+        area.set_spacing(12);
+        area.set_margin_start(24);
+        area.set_margin_end(24);
+        area.set_margin_top(20);
+        area.set_margin_bottom(16);
+        area.append(&label(
+            "The model requests an external action. Allow only if these details match your task.",
+            "notice",
+        ));
+        let name = label(&safe_text(&call.name), "message-author");
+        name.set_wrap(true);
+        area.append(&name);
+        let arguments = label(
+            &safe_text(&serde_json::to_string_pretty(&call.arguments).unwrap_or_default()),
+            "notice",
+        );
+        arguments.set_wrap(true);
+        arguments.set_selectable(true);
+        arguments.set_width_chars(40);
+        arguments.update_property(&[gtk::accessible::Property::Label("Tool arguments")]);
+        area.append(&arguments);
+        self.status(
+            &format!("Waiting for permission: {}", safe_text(&call.name)),
+            false,
+        );
+        let decision = Rc::new(RefCell::new(Some(decision)));
+        let weak = Rc::downgrade(self);
+        dialog.connect_response(move |dialog, response| {
+            let Some(sender) = decision.borrow_mut().take() else {
+                return;
+            };
+            let Some(ui) = weak.upgrade() else {
+                let _ = sender.send(ToolDecision::Denied);
+                dialog.close();
+                return;
+            };
+            if response == gtk::ResponseType::Accept
+                && !cancel.is_cancelled()
+                && !sender.is_closed()
+            {
+                ui.status(&format!("Running {}…", safe_text(&call.name)), false);
+                let tools = tools.clone();
+                let call = call.clone();
+                let cancel = cancel.clone();
+                ui.runtime.spawn(async move {
+                    let result = tools.execute(&call, cancel).await;
+                    let _ = sender.send(match result {
+                        Ok(text) => ToolDecision::Result(text),
+                        Err(error) => ToolDecision::Failed(error),
+                    });
+                });
+            } else {
+                if response == gtk::ResponseType::Reject {
+                    cancel.cancel();
+                }
+                let _ = sender.send(ToolDecision::Denied);
+            }
+            dialog.close();
+        });
+        *self.approval.borrow_mut() = Some(dialog.clone());
+        dialog.present();
+    }
+
+    fn tool_activity(&self) {
+        let dialog = Dialog::new("Tool activity", &self.window, 620);
+        dialog.add_button("Close", gtk::ResponseType::Close);
+        let area = dialog.content_area();
+        area.set_spacing(14);
+        area.set_margin_start(24);
+        area.set_margin_end(24);
+        area.set_margin_top(20);
+        area.set_margin_bottom(16);
+        area.append(&label("Latest 50 saved tool calls. Arguments and results are previews; no action runs from this view.", "notice"));
+        let store = self.store.borrow();
+        if let Some(session) = store.session(&self.selected.borrow()) {
+            let calls = session
+                .messages
+                .iter()
+                .rev()
+                .flat_map(|message| message.tool_trace.iter().rev())
+                .flat_map(|round| round.tool_calls.iter().rev().map(move |call| (round, call)))
+                .take(50);
+            for (round, call) in calls {
+                let section = gtk::Box::new(gtk::Orientation::Vertical, 7);
+                section.add_css_class("plugin-row");
+                section.append(&label(&safe_text(&call.name), "message-author"));
+                let result = round
+                    .results
+                    .iter()
+                    .find(|result| result.tool_call_id == call.id);
+                section.append(&label(
+                    match result {
+                        Some(result) if result.is_error => "Declined, failed or interrupted",
+                        Some(_) => "Completed",
+                        None => "No confirmed result · check the external action before retrying",
+                    },
+                    "notice",
+                ));
+                let details = gtk::Expander::builder()
+                    .label("Arguments and result")
+                    .build();
+                let text = format!(
+                    "Arguments\n{}\n\nResult\n{}",
+                    serde_json::to_string_pretty(&call.arguments).unwrap_or_default(),
+                    result.map_or("No confirmed result", |result| result.content.as_str())
+                );
+                let preview: String = text.chars().take(8192).collect();
+                let body = label(&safe_text(&preview), "notice");
+                body.set_wrap(true);
+                body.set_selectable(true);
+                body.set_width_chars(40);
+                details.set_child(Some(&body));
+                section.append(&details);
+                area.append(&section);
+            }
+        }
+        dialog.connect_response(|dialog, _| dialog.close());
+        dialog.present();
+    }
+
     fn save_pending_reply(&self) -> bool {
         let Some(pending) = self.pending_reply.borrow().clone() else {
             return true;
         };
-        let saved = self.store.borrow_mut().replace_last_assistant(
+        let saved = self.store.borrow_mut().replace_last_agent(
             &pending.session,
             &pending.content,
             pending.status,
+            pending.trace.clone(),
         );
         match saved {
             Ok(()) => {
@@ -799,15 +1050,17 @@ impl Ui {
         if !self.flush_draft() {
             return false;
         }
+        if let Some(dialog) = self.approval.borrow_mut().take() {
+            dialog.close();
+        }
         let follow = self.messages.near_bottom();
         if let Some(mut reply) = self.active.borrow_mut().take() {
             reply.cancel.cancel();
-            while let Ok(StreamEvent::Delta(delta)) = reply.events.try_recv() {
-                reply.content.push_str(&delta);
-            }
+            drain_reply(&mut reply);
             self.messages
                 .update_last(&reply.message, &reply.content, MessageStatus::Cancelled);
             *self.pending_reply.borrow_mut() = Some(PendingReply {
+                trace: reply.trace,
                 session: reply.session,
                 content: reply.content,
                 status: MessageStatus::Cancelled,
@@ -823,6 +1076,7 @@ impl Ui {
         if !saved {
             return false;
         }
+        self.runtime.block_on(self.tools.close_all());
         self.key.borrow_mut().clear();
         true
     }
@@ -1143,4 +1397,19 @@ pub fn startup_error(app: &gtk::Application, message: &str) {
     content.append(&close);
     window.set_child(Some(&content));
     window.present();
+}
+
+fn drain_reply(reply: &mut ActiveReply) {
+    while let Ok(event) = reply.events.try_recv() {
+        match event {
+            AgentEvent::Delta(delta) => reply.content.push_str(&delta),
+            AgentEvent::Checkpoint { trace, ack } => {
+                reply.trace = trace;
+                let _ = ack.send(false);
+            }
+            AgentEvent::ToolRequest { reply, .. } => {
+                let _ = reply.send(ToolDecision::Denied);
+            }
+        }
+    }
 }

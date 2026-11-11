@@ -1,8 +1,9 @@
 # DeepSeek Harness for Linux — native preview
 
 An unofficial native Linux client written in Rust, with a GTK4 interface and a
-Rust chat backend. It does not start Node, a browser engine, or the upstream
-Harness server. It is not affiliated with or endorsed by DeepSeek.
+Rust chat backend. Normal chat and WASM extensions run without Node or a WebView.
+Optional MCP servers and JavaScript tool plugins run only when explicitly
+connected. It is not affiliated with or endorsed by DeepSeek.
 
 This is a separate application under development. The existing Tauri application
 remains available in the repository root. The native client does not import,
@@ -65,9 +66,46 @@ package includes the same example at
 `/usr/share/deepseek-harness-native/examples/uppercase`. It changes ASCII
 letters in the composer to uppercase while preserving other UTF-8 characters.
 
-This is a new plugin contract. Existing npm/Cordis plugins, React plugin views,
-MCP servers, and the upstream Harness agent/tool loop are not implemented by
-this preview. See [architecture](docs/ARCHITECTURE.md) for the boundary.
+Enable **Offer WASM extensions to the model** in **Tool connections** to make
+installed WASM extensions available as model tools. The model supplies text
+and receives the transformed result after approval; this does not modify the
+composer. The manual extension workflow remains available.
+
+## MCP and JavaScript tool plugins
+
+Open **Tool connections → Add MCP server**. Enter a connection ID, the local
+server's program, and one argument per line. Save it, then press **Connect**.
+The bridge uses MCP over private stdin/stdout pipes. It first negotiates the
+modern `server/discover` lifecycle and falls back to the older `initialize`
+handshake for compatible legacy servers. Servers can be written in Rust, Node,
+Python, or another language. Their runtime must already be installed; the native
+app does not install packages automatically.
+
+For an existing Harness tool plugin, choose **Add JavaScript tool plugin**.
+Select an installed Harness runtime pinned to `@deepseek-ai/dsh@0.2.1-rc.5`,
+the plugin module or bundle folder, and an optional plugin settings file. This
+uses an optional Node/Cordis host with its own private profile. The native app
+ships the host code, but does not bundle Node or the upstream runtime.
+
+Connections start stopped after every app launch. The model asks **Allow once**
+before each tool call. **Deny** returns a refusal; **Stop task** cancels the task.
+**Tool activity** shows saved calls and outcomes. Tool arguments and results are
+saved in the conversation and can be sent to the configured model provider.
+External processes and JavaScript plugins run with your user account; use
+trusted programs and plugins.
+
+This bridge supports local stdio MCP tools with text/structured results, and
+server-side tools from compatible JavaScript Harness plugins. React panels,
+plugins that replace the upstream agent loop, remote HTTP/OAuth MCP connections,
+and image/audio tool results are not implemented. The compatibility host has an
+isolated upstream session; it does not expose native conversations as upstream
+Harness sessions. See [tool setup](docs/TOOLS.md) and
+[JavaScript compatibility](compat/README.md).
+
+Saved reasoning or tool history upgrades the native profile to format 2. Earlier alpha clients
+refuse that format; keep a backup before trying an older binary. For older
+DeepSeek conversations that lack saved reasoning, start a new conversation or
+disconnect tools. Existing chat data is preserved.
 
 ## Checks
 
@@ -88,6 +126,7 @@ To run the GTK workflow test after building the example:
 ```sh
 sudo apt install xvfb dbus-x11 fonts-ubuntu python3-gi gir1.2-gtk-4.0 python3-pyatspi at-spi2-core python3-pil xdotool tesseract-ocr tesseract-ocr-eng
 python3 native/tests/smoke-native.py native/target/debug/deepseek-harness-native
+python3 native/tests/smoke-tools.py native/target/debug/deepseek-harness-native
 ```
 
 The script creates a private Xvfb display, session bus, and disposable profile.
@@ -106,14 +145,14 @@ sudo apt install dpkg-dev
 bash native/scripts/build-native-deb.sh
 ```
 
-The script creates `native/dist/deepseek-harness-native_0.2.0~alpha1_amd64.deb`
+The script creates `native/dist/deepseek-harness-native_0.2.0~alpha2_amd64.deb`
 and `SHA256SUMS`. It derives runtime library dependencies from the compiled
 binary. Verify and install the package:
 
 ```sh
 cd native/dist
 sha256sum --check SHA256SUMS
-sudo apt install './deepseek-harness-native_0.2.0~alpha1_amd64.deb'
+sudo apt install './deepseek-harness-native_0.2.0~alpha2_amd64.deb'
 ```
 
 The separate package and desktop entry are named **DeepSeek Harness for Linux

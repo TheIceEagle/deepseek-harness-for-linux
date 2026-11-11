@@ -16,7 +16,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: native-${{ github.head_ref || github.ref_name }}
+  group: native-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 env:
   CARGO_BUILD_JOBS: "2"
@@ -70,6 +70,8 @@ jobs:
         env:
           HARNESS_NATIVE_PLUGIN_FIXTURE: native/examples/uppercase
         run: python3 native/tests/smoke-native.py native/target/debug/deepseek-harness-native
+      - name: Check native tool approvals and MCP workflows
+        run: python3 native/tests/smoke-tools.py native/target/debug/deepseek-harness-native
       - name: Build one baseline Debian installer and checksums
         if: matrix.ubuntu == '24.04'
         run: bash native/scripts/build-native-deb.sh
@@ -127,6 +129,8 @@ jobs:
         env:
           HARNESS_NATIVE_PLUGIN_FIXTURE: /usr/share/deepseek-harness-native/examples/uppercase
         run: python3 native/tests/smoke-native.py /usr/bin/deepseek-harness-native
+      - name: Check installed tool approvals and MCP workflows
+        run: python3 native/tests/smoke-tools.py /usr/bin/deepseek-harness-native
       - name: Retain installed native reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -135,3 +139,35 @@ jobs:
           path: artifacts/native-*
           if-no-files-found: ignore
           retention-days: 7
+  compatibility:
+    name: JavaScript tool plugin compatibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26.10.0"
+          cache: npm
+          cache-dependency-path: runtime/package-lock.json
+      - name: Install the pinned optional upstream runtime
+        run: |
+          npm install --global npm@12.1.0
+          npm ci --prefix runtime
+      - name: Check unchanged upstream plugins through the compatibility host
+        run: python3 native/compat/tests/test_compat.py
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.93.1"
+      - name: Cache compatibility client build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: native-compat-rust1.93.1-${{ hashFiles('native/Cargo.lock') }}
+      - name: Check Rust MCP client against the real JavaScript plugin host
+        run: cargo run --manifest-path native/Cargo.toml --locked -p harness-native-mcp --example check_compat -- "$GITHUB_WORKSPACE/runtime"
