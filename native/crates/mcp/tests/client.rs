@@ -47,6 +47,22 @@ fn pid(path: &Path) -> u32 {
     std::fs::read_to_string(path).unwrap().parse().unwrap()
 }
 
+fn processes(marker: &Path) -> Vec<u32> {
+    std::fs::read_to_string(marker.with_extension("pids"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| line.parse().unwrap())
+        .collect()
+}
+
+fn methods(marker: &Path) -> Vec<String> {
+    std::fs::read_to_string(marker.with_extension("methods"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
 fn running(pid: u32) -> bool {
     // An orphaned grandchild can briefly await the host init reaper after its
     // parent dies. A zombie has stopped executing and cannot hold pipe handles.
@@ -92,6 +108,138 @@ async fn real_stdio_handshake_pagination_and_unicode_tool_results() {
             .await,
         Err(McpError::Disconnected)
     );
+}
+
+#[tokio::test]
+async fn modern_discovery_only_server_receives_required_metadata_and_no_extra_capabilities() {
+    let scratch = TempDir::new().unwrap();
+    let marker = scratch.path().join("pid");
+    let client = McpClient::connect(&config("modern", Some(&marker)), CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(client.tools().len(), 2);
+    assert_eq!(
+        client
+            .call(
+                &tool(&client),
+                json!({"text": "Modern café 世界"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap(),
+        "Modern café 世界"
+    );
+    assert_eq!(processes(&marker).len(), 1);
+    assert_eq!(methods(&marker)[0], "server/discover");
+    assert!(!methods(&marker).iter().any(|method| method == "initialize"));
+    client.close().await;
+    assert!(!PathBuf::from(format!("/proc/{}", pid(&marker))).exists());
+}
+
+#[tokio::test]
+async fn unsupported_discovery_falls_back_on_the_same_legacy_process() {
+    let scratch = TempDir::new().unwrap();
+    let marker = scratch.path().join("pid");
+    let client = McpClient::connect(&config("echo", Some(&marker)), CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(&methods(&marker)[..2], ["server/discover", "initialize"]);
+    assert_eq!(processes(&marker).len(), 1);
+    client.close().await;
+}
+
+#[tokio::test]
+async fn responsive_negotiation_and_slow_catalog_keep_the_full_startup_budget() {
+    for mode in ["modern_slow_catalog", "legacy_slow_init"] {
+        let scratch = TempDir::new().unwrap();
+        let marker = scratch.path().join("pid");
+        let mut server = config(mode, Some(&marker));
+        server.timeout_secs = 2;
+        let client = McpClient::connect(&server, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(client.tools().len(), 2);
+        assert_eq!(processes(&marker).len(), 1);
+        client.close().await;
+    }
+}
+
+#[tokio::test]
+async fn silent_discovery_restarts_once_for_legacy_within_a_short_startup_budget() {
+    let scratch = TempDir::new().unwrap();
+    let marker = scratch.path().join("pid");
+    let mut server = config("ignore_discovery", Some(&marker));
+    server.timeout_secs = 1;
+    let client = McpClient::connect(&server, CancellationToken::new())
+        .await
+        .unwrap();
+    let children = processes(&marker);
+    assert_eq!(children.len(), 2);
+    assert!(!PathBuf::from(format!("/proc/{}", children[0])).exists());
+    assert!(running(children[1]));
+    assert_eq!(&methods(&marker)[..2], ["server/discover", "initialize"]);
+    client.close().await;
+    assert!(children
+        .iter()
+        .all(|pid| !PathBuf::from(format!("/proc/{pid}")).exists()));
+}
+
+#[tokio::test]
+async fn cancellation_during_discovery_and_silent_fallback_reaps_every_started_process() {
+    for after_fallback in [false, true] {
+        let scratch = TempDir::new().unwrap();
+        let marker = scratch.path().join("pid");
+        let mut server = config("silent_startup", Some(&marker));
+        server.timeout_secs = 1;
+        let cancel = CancellationToken::new();
+        let token = cancel.clone();
+        let connecting = tokio::spawn(async move { McpClient::connect(&server, token).await });
+        if after_fallback {
+            wait_until(|| processes(&marker).len() == 2).await;
+        } else {
+            wait_until(|| {
+                methods(&marker)
+                    .iter()
+                    .any(|method| method == "server/discover")
+            })
+            .await;
+        }
+        cancel.cancel();
+        assert!(matches!(
+            connecting.await.unwrap(),
+            Err(McpError::Cancelled)
+        ));
+        assert_eq!(processes(&marker).len(), if after_fallback { 2 } else { 1 });
+        assert!(processes(&marker)
+            .iter()
+            .all(|pid| !PathBuf::from(format!("/proc/{pid}")).exists()));
+    }
+}
+
+#[tokio::test]
+async fn modern_rejection_and_malformed_discovery_are_not_restarted_or_leaked() {
+    for (mode, expected) in [
+        ("modern_rejection", McpError::ConnectionFailed),
+        ("modern_header_rejection", McpError::ConnectionFailed),
+        ("modern_legacy_version", McpError::ConnectionFailed),
+        ("malformed_discovery", McpError::Timeout),
+        ("partial_discovery", McpError::Timeout),
+    ] {
+        let scratch = TempDir::new().unwrap();
+        let marker = scratch.path().join("pid");
+        let mut server = config(mode, Some(&marker));
+        server.timeout_secs = 1;
+        let error = McpClient::connect(&server, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(!error
+            .to_string()
+            .contains("synthetic-private-discovery-marker"));
+        assert_eq!(processes(&marker).len(), 1);
+        assert_eq!(methods(&marker), ["server/discover"]);
+        assert!(!PathBuf::from(format!("/proc/{}", pid(&marker))).exists());
+    }
 }
 
 #[tokio::test]
@@ -187,21 +335,23 @@ async fn rejects_duplicate_oversized_and_cyclic_catalogs_without_leaking_process
 
 #[tokio::test]
 async fn cancelled_operations_stop_uncooperative_server_and_reap_it() {
-    let scratch = TempDir::new().unwrap();
-    let marker = scratch.path().join("pid");
-    let client = McpClient::connect(&config("hang", Some(&marker)), CancellationToken::new())
-        .await
-        .unwrap();
-    let cancel = CancellationToken::new();
-    let token = cancel.clone();
-    let name = tool(&client);
-    let copy = client.clone();
-    let task = tokio::spawn(async move { copy.call(&name, json!({}), token).await });
-    wait_until(|| marker.with_extension("called").exists()).await;
-    cancel.cancel();
-    assert_eq!(task.await.unwrap(), Err(McpError::Cancelled));
-    assert!(!client.is_connected());
-    assert!(!PathBuf::from(format!("/proc/{}", pid(&marker))).exists());
+    for mode in ["hang", "modern_hang"] {
+        let scratch = TempDir::new().unwrap();
+        let marker = scratch.path().join("pid");
+        let client = McpClient::connect(&config(mode, Some(&marker)), CancellationToken::new())
+            .await
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let token = cancel.clone();
+        let name = tool(&client);
+        let copy = client.clone();
+        let task = tokio::spawn(async move { copy.call(&name, json!({}), token).await });
+        wait_until(|| marker.with_extension("called").exists()).await;
+        cancel.cancel();
+        assert_eq!(task.await.unwrap(), Err(McpError::Cancelled));
+        assert!(!client.is_connected());
+        assert!(!PathBuf::from(format!("/proc/{}", pid(&marker))).exists());
+    }
 }
 
 #[tokio::test]
@@ -225,7 +375,7 @@ async fn a_tool_timeout_disconnects_and_reaps_the_server() {
 
 #[tokio::test]
 async fn timeouts_and_oversized_wire_lines_stop_and_reap_startup_servers() {
-    for mode in ["stall", "huge_line"] {
+    for mode in ["stall", "huge_line", "silent_startup"] {
         let scratch = TempDir::new().unwrap();
         let marker = scratch.path().join("pid");
         let mut server = config(mode, Some(&marker));
@@ -236,6 +386,11 @@ async fn timeouts_and_oversized_wire_lines_stop_and_reap_startup_servers() {
         ));
         let child = pid(&marker);
         wait_until(|| !PathBuf::from(format!("/proc/{child}")).exists()).await;
+        let children = processes(&marker);
+        assert_eq!(children.len(), if mode == "silent_startup" { 2 } else { 1 });
+        assert!(children
+            .iter()
+            .all(|pid| !PathBuf::from(format!("/proc/{pid}")).exists()));
     }
 }
 
@@ -353,23 +508,25 @@ fn explicit_environment_is_isolated_from_model_credentials_and_ambient_secrets()
     if std::env::var_os("HARNESS_MCP_TEST_CHILD").is_some() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
-            let mut server = config("environment", None);
-            server.env_names = vec!["HARNESS_MCP_EXPLICIT".into()];
-            let client = McpClient::connect(&server, CancellationToken::new())
-                .await
-                .unwrap();
-            let result = client
-                .call(&tool(&client), json!({}), CancellationToken::new())
-                .await
-                .unwrap();
-            assert_eq!(
-                serde_json::from_str::<Value>(&result).unwrap(),
-                json!({"modelKey": false, "ambientSecret": false, "explicit": true})
-            );
-            assert!(!serde_json::to_string(&server)
-                .unwrap()
-                .contains("per-server-marker"));
-            client.close().await;
+            for mode in ["environment", "modern_environment"] {
+                let mut server = config(mode, None);
+                server.env_names = vec!["HARNESS_MCP_EXPLICIT".into()];
+                let client = McpClient::connect(&server, CancellationToken::new())
+                    .await
+                    .unwrap();
+                let result = client
+                    .call(&tool(&client), json!({}), CancellationToken::new())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Value>(&result).unwrap(),
+                    json!({"modelKey": false, "ambientSecret": false, "explicit": true})
+                );
+                assert!(!serde_json::to_string(&server)
+                    .unwrap()
+                    .contains("per-server-marker"));
+                client.close().await;
+            }
         });
         return;
     }

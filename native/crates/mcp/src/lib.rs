@@ -6,10 +6,13 @@
 //! payloads. Keep SDK protocol tracing disabled when handling private tool data.
 
 use rmcp::{
-    model::{CallToolRequestParams, ClientConfig, Implementation, PaginatedRequestParams},
-    service::{Peer, RunningService},
+    model::{
+        CallToolRequestParams, ClientConfig, Implementation, PaginatedRequestParams,
+        ProtocolVersion,
+    },
+    service::{serve_client_with_lifecycle_and_ct, ClientLifecycleMode, Peer, RunningService},
     transport::async_rw::AsyncRwTransport,
-    RoleClient, ServiceExt,
+    RoleClient,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,11 +20,20 @@ use std::{
     collections::HashSet,
     fmt,
     path::PathBuf,
+    pin::Pin,
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    task::{Context, Poll},
     time::Duration,
 };
-use tokio::{process::Child, sync::Mutex as AsyncMutex};
+use tokio::{
+    io::{AsyncRead, ReadBuf},
+    process::{Child, ChildStdin, ChildStdout, Command},
+    sync::Mutex as AsyncMutex,
+};
 use tokio_util::sync::CancellationToken;
 
 pub const MAX_TOOLS: usize = 64;
@@ -161,6 +173,7 @@ impl fmt::Display for McpError {
 impl std::error::Error for McpError {}
 
 type Service = RunningService<RoleClient, ClientConfig>;
+type StdioTransport = AsyncRwTransport<RoleClient, ObservedStdout, ChildStdin>;
 
 struct Inner {
     peer: Peer<RoleClient>,
@@ -241,32 +254,81 @@ impl McpClient {
             command.current_dir(cwd);
         }
         install_parent_death_guard(&mut command)?;
-        let mut child = command.spawn().map_err(|_| McpError::StartFailed)?;
-        let output = child.stdout.take().ok_or(McpError::StartFailed)?;
-        let input = child.stdin.take().ok_or(McpError::StartFailed)?;
-        let process = OwnedProcess(Some(child));
-        let transport = AsyncRwTransport::<RoleClient, _, _>::new_client(output, input)
-            .with_max_line_length(MAX_LINE_BYTES);
+        let timeout = Duration::from_secs(config.timeout_secs);
+        let deadline = tokio::time::Instant::now() + timeout;
+        let (mut process, transport, observed) = spawn_transport(&mut command)?;
         let lifetime = CancellationToken::new();
         let info = ClientConfig::new(
             Default::default(),
             Implementation::new("deepseek-harness-native", env!("CARGO_PKG_VERSION")),
         );
-        let timeout = Duration::from_secs(config.timeout_secs);
         let startup = async {
-            let service = info
-                .serve_with_ct(transport, lifetime.clone())
-                .await
-                .map_err(|_| McpError::ConnectionFailed)?;
+            let negotiated = {
+                let automatic = serve_client_with_lifecycle_and_ct(
+                    info.clone(),
+                    transport,
+                    ClientLifecycleMode::Auto {
+                        preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                        legacy_version: Some(ProtocolVersion::LATEST_WITH_INITIALIZE),
+                    },
+                    lifetime.clone(),
+                );
+                tokio::pin!(automatic);
+                // The SDK's silent discovery fallback waits ten seconds. With
+                // shorter budgets reserve half for legacy startup, but only if
+                // the peer has emitted no bytes. Any response, partial frame or
+                // malformed output keeps the full original negotiation budget.
+                if timeout < Duration::from_secs(20) {
+                    match tokio::time::timeout(timeout / 2, &mut automatic).await {
+                        Ok(result) => Some(result),
+                        Err(_) if observed.load(Ordering::Acquire) => Some(automatic.await),
+                        Err(_) => None,
+                    }
+                } else {
+                    Some(automatic.await)
+                }
+            };
+            let service = match negotiated {
+                Some(result) => result,
+                None => {
+                    // Restart only an entirely silent probe. Fresh pipes and
+                    // request IDs cannot consume a late discovery response as
+                    // the legacy handshake, and no tool has been called yet.
+                    process.stop().await;
+                    if cancel.is_cancelled() {
+                        return Err(McpError::Cancelled);
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(McpError::Timeout);
+                    }
+                    let (next, transport, _) = spawn_transport(&mut command)?;
+                    process = next;
+                    serve_client_with_lifecycle_and_ct(
+                        info.with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE),
+                        transport,
+                        ClientLifecycleMode::Initialize,
+                        lifetime.clone(),
+                    )
+                    .await
+                }
+            }
+            .map_err(|_| McpError::ConnectionFailed)?;
             let tools = discover(service.peer(), &config.id).await?;
             Ok::<_, McpError>((service, tools))
         };
         let result = tokio::select! {
             biased;
             () = cancel.cancelled() => Err(McpError::Cancelled),
-            result = tokio::time::timeout(timeout, startup) => result.map_err(|_| McpError::Timeout)?,
+            result = tokio::time::timeout_at(deadline, startup) => result.unwrap_or(Err(McpError::Timeout)),
         };
-        let (service, tools) = result?;
+        let (service, tools) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                lifetime.cancel();
+                process.stop().await;
+                return Err(error);
+            }
+        };
         Ok(Self {
             inner: Arc::new(Inner {
                 peer: service.peer().clone(),
@@ -366,6 +428,45 @@ impl McpClient {
             let _ = child.kill().await;
             let _ = child.wait().await;
         }
+    }
+}
+
+fn spawn_transport(
+    command: &mut Command,
+) -> Result<(OwnedProcess, StdioTransport, Arc<AtomicBool>), McpError> {
+    let mut child = command.spawn().map_err(|_| McpError::StartFailed)?;
+    let output = child.stdout.take().ok_or(McpError::StartFailed)?;
+    let input = child.stdin.take().ok_or(McpError::StartFailed)?;
+    let observed = Arc::new(AtomicBool::new(false));
+    let output = ObservedStdout {
+        output,
+        observed: observed.clone(),
+    };
+    Ok((
+        OwnedProcess(Some(child)),
+        AsyncRwTransport::new_client(output, input).with_max_line_length(MAX_LINE_BYTES),
+        observed,
+    ))
+}
+
+/// Observe activity without parsing, changing, logging, or buffering peer data.
+struct ObservedStdout {
+    output: ChildStdout,
+    observed: Arc<AtomicBool>,
+}
+
+impl AsyncRead for ObservedStdout {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buffer.filled().len();
+        let result = Pin::new(&mut self.output).poll_read(cx, buffer);
+        if buffer.filled().len() > before {
+            self.observed.store(true, Ordering::Release);
+        }
+        result
     }
 }
 
@@ -502,6 +603,19 @@ fn public_name(server: &str, raw: &str) -> String {
 }
 
 struct OwnedProcess(Option<Child>);
+
+impl OwnedProcess {
+    async fn stop(&mut self) {
+        // Keep ownership until wait completes: cancellation of this future must
+        // leave the child available for the outer startup cleanup to reap.
+        if let Some(child) = self.0.as_mut() {
+            kill_group(child);
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+        self.0.take();
+    }
+}
 
 impl Drop for OwnedProcess {
     fn drop(&mut self) {

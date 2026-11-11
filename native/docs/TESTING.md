@@ -69,6 +69,12 @@ environment isolation, timeout/cancellation, normal descendant cleanup,
 concurrent close/reaping and direct-child shutdown after parent death. Arbitrary
 external MCP programs and trusted JavaScript plugins are not a process sandbox.
 
+Lifecycle fixtures also cover discovery-only modern servers, modern per-request
+metadata, same-process legacy fallback, a silent legacy probe with a short
+deadline, responsive slow initialization/catalog loading, modern rejection and
+malformed-response handling, and cancellation around startup fallback. Both
+lifecycles retain the same tool approvals, bounds and process cleanup.
+
 Format-1 conversation fixtures remain readable. Saved reasoning/tool traces
 upgrade to format 2, which earlier alpha clients refuse. Recovery records an
 unknown outcome and never replays a tool. DeepSeek conversations predating saved

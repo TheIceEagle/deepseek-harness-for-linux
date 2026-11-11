@@ -75,9 +75,11 @@ composer. The manual extension workflow remains available.
 
 Open **Tool connections → Add MCP server**. Enter a connection ID, the local
 server's program, and one argument per line. Save it, then press **Connect**.
-The bridge uses standard MCP over private stdin/stdout pipes. Servers can be
-written in Rust, Node, Python, or another language. Their runtime must already
-be installed; the native app does not install packages automatically.
+The bridge uses MCP over private stdin/stdout pipes. It first negotiates the
+modern `server/discover` lifecycle and falls back to the older `initialize`
+handshake for compatible legacy servers. Servers can be written in Rust, Node,
+Python, or another language. Their runtime must already be installed; the native
+app does not install packages automatically.
 
 For an existing Harness tool plugin, choose **Add JavaScript tool plugin**.
 Select an installed Harness runtime pinned to `@deepseek-ai/dsh@0.2.1-rc.5`,

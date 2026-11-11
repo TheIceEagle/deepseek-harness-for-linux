@@ -25,6 +25,19 @@ discovers its tools. **Disconnect** stops it. A timeout or cancellation closes
 that connection, so reconnect before the next use. Catalogs refresh on reconnect.
 There is no automatic reconnection or process startup after restarting the app.
 
+Startup first tries modern MCP discovery (`2026-07-28`) and falls back to legacy
+initialization (`2025-11-25`, with the server able to negotiate an older version).
+One configured deadline covers startup and tool discovery; the default is 60
+seconds. For deadlines below 20 seconds, a completely silent probe receives half
+the available startup budget. If it remains silent, its process is stopped and
+reaped before one fresh legacy startup attempt uses the remaining budget.
+Any bytes received on the protocol stream disable that early restart, allowing
+responsive negotiation and catalog loading to use the remaining deadline. With
+longer deadlines, the SDK's normal ten-second discovery fallback applies. A
+short deadline can reject a slow modern server; increase it if the server needs
+more startup time.
+This fallback never retries a tool execution or bypasses tool approval.
+
 For Playwright MCP with your existing signed-in Chrome tabs, install its
 [official browser extension](https://playwright.dev/mcp/configuration/browser-extension)
 and configure an installed `npx` executable with these argument lines:
