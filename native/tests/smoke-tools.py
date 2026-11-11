@@ -156,6 +156,7 @@ def run(application):
         scratch = Path(scratch)
         environment = test_environment(scratch)
         environment["DEEPSEEK_API_KEY"] = KEY
+        environment["G_DEBUG"] = "fatal-criticals"
         profile = scratch / "data/deepseek-harness-native"
         marker = scratch / "fixture"
 

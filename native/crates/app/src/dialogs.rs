@@ -206,6 +206,10 @@ impl Dialog {
         if self.responses.closed.replace(true) {
             return;
         }
+        // GTK 4.14 can retain these pointers until the window is finalized,
+        // after the response buttons below have already been removed.
+        self.window.set_default_widget(None::<&gtk::Widget>);
+        gtk::prelude::RootExt::set_focus(&self.window, None::<&gtk::Widget>);
         // Call destroy rather than close, which would emit close-request again.
         self.window.destroy();
         self.responses.handlers.borrow_mut().clear();
