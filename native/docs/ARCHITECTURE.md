@@ -31,6 +31,46 @@ GTK4 desktop interface
   It exposes only the selected plugin's tools, with default upstream tools
   disabled. It does not reinterpret the upstream service API in Rust.
 
+## Languages and extension ecosystems
+
+| Layer | Implementation |
+| --- | --- |
+| Native windows, chat, settings and approval controls | Rust with GTK4 widgets |
+| Model requests, streaming, agent/tool loop and saved conversations | Rust |
+| MCP negotiation, tool calls and child-process supervision | Rust with the official `rmcp` SDK |
+| Native WASM extension host | Rust with Wasmi |
+| Optional Harness tool compatibility host | Plain JavaScript (`compat/*.mjs`) on Node, using unchanged upstream Cordis packages |
+| Upstream Harness web interface and its client plugins | Upstream TypeScript/React, distributed as JavaScript bundles; not the native GTK interface |
+
+The repository root's `src-tauri/`, `web/` and `runtime/` also retain the original
+Tauri application. That is a separate Rust shell around the upstream Node/web
+application. Ordinary native chat does not execute that frontend or backend.
+GTK and other system libraries remain native dependencies implemented in their
+own languages; describing the application code as Rust does not mean every
+library has been rewritten in Rust.
+
+Existing Harness React DOM plugins need a browser DOM and the upstream client
+platform, including its module table, shared React/Cordis identities, slots,
+styles, lifecycle and session/workspace services. A WebView supplies rendering;
+it does not supply those host services or map upstream sessions to native chats.
+
+A possible future extension path keeps the main interface and agent in Rust,
+with an optional web panel host for HTML/React content. GTK4 embedding requires
+the [WebKitGTK 6.0 API](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/gtk/migrating-to-webkitgtk-6.0.md),
+separate from the original Tauri application's GTK3-oriented WebKitGTK 4.1.
+The panel would need isolated web state and a narrow, permission-controlled
+message bridge to Rust. It adds a web engine when enabled; its performance
+must be measured rather than inferred from the native-only client.
+
+For broader UI interoperability, [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview)
+defines HTML UI resources and host messaging independently of a frontend
+framework. Supporting it would require UI capability negotiation, resource
+loading, sandboxed rendering and the app/host protocol; the current tool bridge
+does not implement those features. Selected Harness React panels would still
+need their upstream platform dependencies or adapters. Full upstream workspace
+compatibility is a separate integration, while a GTK port creates a native
+equivalent rather than executing an unchanged React plugin.
+
 Persistent state belongs exclusively to the native client. Its profile is
 `$XDG_DATA_HOME/deepseek-harness-native`, with the normal fallback beneath
 `~/.local/share`. It does not read or write
