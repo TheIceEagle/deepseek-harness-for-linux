@@ -116,3 +116,6 @@ cancelled or interrupted reply keeps its text and a written status.
 | Scrollbar | style.css global GTK baseline | This document | Native geometry | Native screenshots and scroll checks |
 | Dialog | dialogs.rs native modal Window | UX contract | Settings/extensions/confirmation | Focus, Escape, file picker |
 | Feedback | Ui::status and dialog feedback labels | UX contract | Pending/saved/error/cancelled | Native GUI smoke |
+| Tool setup | tools_ui.rs + tools.rs registry | UX contract | MCP server / JavaScript tool plugin | Local fixture desktop smoke |
+| Tool approval | Ui::approve_tool + shared modal | UX contract | Allow once / Deny / Stop | Checkpoint-before-dispatch tests |
+| Tool history | Ui::tool_activity | Persisted canonical trace | Latest 50 calls, expandable previews | Saved history and restart checks |

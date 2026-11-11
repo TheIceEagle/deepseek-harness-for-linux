@@ -38,10 +38,17 @@ install -Dm755 "$binary" "$staging/usr/bin/$binary_name"
 install -Dm644 "$repo_dir/LICENSE" "$staging/usr/share/doc/$package_name/copyright"
 install -Dm644 "$native_dir/README.md" "$staging/usr/share/doc/$package_name/README.md"
 install -Dm644 "$native_dir/THIRD_PARTY_NOTICES.md" "$staging/usr/share/doc/$package_name/THIRD_PARTY_NOTICES.md"
+for documentation in "$native_dir"/docs/*.md; do
+  install -Dm644 "$documentation" "$staging/usr/share/doc/$package_name/docs/$(basename -- "$documentation")"
+done
+install -Dm644 "$native_dir/compat/README.md" "$staging/usr/share/doc/$package_name/compat/README.md"
 python3 "$script_dir/collect-licenses.py" "$staging/usr/share/doc/$package_name/third-party-licenses"
 install -Dm644 "$repo_dir/src-tauri/icons/icon.png" "$staging/usr/share/icons/hicolor/128x128/apps/$package_name.png"
 for example_file in plugin.json plugin.wasm; do
   install -Dm644 "$native_dir/examples/uppercase/$example_file" "$staging/usr/share/$package_name/examples/uppercase/$example_file"
+done
+for compat_file in "$native_dir"/compat/*.mjs; do
+  install -Dm644 "$compat_file" "$staging/usr/share/$package_name/compat/$(basename -- "$compat_file")"
 done
 mkdir -p "$staging/usr/share/applications" "$staging/DEBIAN" "$work_dir/debian"
 

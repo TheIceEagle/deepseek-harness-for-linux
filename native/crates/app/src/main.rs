@@ -1,6 +1,8 @@
 mod dialogs;
 mod markdown;
 mod messages;
+mod tools;
+mod tools_ui;
 mod ui;
 
 use gtk::{gio, glib, prelude::*};

@@ -14,6 +14,9 @@ data and extension boundaries. This contract governs observable native behavior.
 | Install extension | Choose local folder | Show installation progress | Refresh installed list | Keep folder picker cancellable; fixed inline error |
 | Run extension | Explicit command | Bounded background worker | Replace unchanged draft with result | Preserve draft on trap/limit/error or stale result |
 | Remove extension | Remove | Confirmation focused on Keep extension | Refresh installed list | Keep entry and show failure |
+| Tool connection | Tool connections / Connect | Native progress, responsive window | Show connected tool count | Fixed failure; reconnect after timeout/cancel |
+| Tool call | Model requests an action | Save plan, then native approval modal | Allow once executes and saves result | Deny/Stop; failed save prevents dispatch |
+| Tool activity | Tool activity | Local saved trace | Latest 50 calls with expandable previews | Unknown outcomes remain explicit; no replay action |
 | Close | Window close | Flush draft and cancel reply | Save partial reply and exit | Remain open if draft save fails |
 
 GTK owns controls, accessibility roles, modal focus/keyboard behavior, file
