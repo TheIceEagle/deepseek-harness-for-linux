@@ -1,0 +1,9 @@
+{
+  "name": "native-compat-test-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.5"
+  }
+}
