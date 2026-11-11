@@ -16,7 +16,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: native-${{ github.head_ref || github.ref_name }}
+  group: native-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 env:
   CARGO_BUILD_JOBS: "2"
