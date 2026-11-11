@@ -307,7 +307,13 @@ def run(application):
             desktop.close()
             report.write_text(json.dumps({"provider": "synthetic loopback only", "mcpConfigurationAndDiscovery": "passed", "permissionDenyAndAllow": "passed", "modelToolContinuation": "passed", "toolCheckpointFailure": "passed", "stopAndDisconnect": "passed", "restartWithoutAutoStart": "passed", "credentialPrivacy": "passed", "providerRequests": provider.requests, "actualToolExecutions": len(calls())}, indent=2) + "\n")
         except Exception:
-            (artifacts / "native-tools-failure.json").write_text(json.dumps({"stage": stage, "providerRequests": provider.requests, "actualToolExecutions": len(calls()), "providerFailures": provider.failures}, indent=2) + "\n")
+            captured = ""
+            if output:
+                output.flush()
+                output.seek(0, os.SEEK_END)
+                output.seek(max(0, output.tell() - 8192))
+                captured = output.read().decode("utf-8", errors="replace").replace(KEY, "[synthetic key redacted]")
+            (artifacts / "native-tools-failure.json").write_text(json.dumps({"stage": stage, "providerRequests": provider.requests, "actualToolExecutions": len(calls()), "providerFailures": provider.failures, "processReturncode": process.poll() if process else None, "appOutputTail": captured}, indent=2) + "\n")
             try:
                 snapshot(artifacts / "native-tools-failure.png")
             except Exception:

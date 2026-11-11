@@ -6,9 +6,11 @@ An Ubuntu desktop shell for [DeepSeek Harness](https://github.com/deepseek-ai/de
 
 A separate [native Rust client preview](native/README.md) is being developed in
 `native/`: GTK4 interface, Rust streaming backend, private conversation storage,
-and installable WASM text extensions. It uses no Node or WebView. This is an
-independent implementation with its own profile and plugin contract, rather than
-full compatibility with the upstream Harness agent and JavaScript plugins.
+WASM extensions, and local MCP tool connections. Normal chat and WASM commands
+run without Node or a WebView. An optional Node/Cordis host supports existing
+server-side JavaScript tool plugins. Native conversations and the agent loop
+remain separate from upstream Harness; React panels and upstream agent hooks
+are not native plugin interfaces. See the [tool setup guide](native/docs/TOOLS.md).
 
 The npm runtime is pinned to **`@deepseek-ai/dsh@0.2.1-rc.5`**. This project is independent of DeepSeek's official desktop distribution. Four transitive dependencies are overridden to patched versions: `undici@8.12.2`, `zod@4.6.7`, `fflate@0.8.3`, and `@modelcontextprotocol/client@2.3.0`.
 

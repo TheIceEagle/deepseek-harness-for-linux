@@ -48,6 +48,12 @@ Tauri installation normally supplies it at
 `/usr/lib/DeepSeek Harness for Linux/runtime`. A prepared source `runtime/`
 folder also works with a separately installed Node executable.
 
+A harmless first check is the existing plugin folder
+`/usr/lib/DeepSeek Harness for Linux/runtime/node_modules/@deepseek-ai/dsh-tool-working-directory`.
+After connecting, ask the model for the working directory and approve the call.
+The host inherits the app's working folder; use the general MCP connection form
+with an explicit Working folder if a tool requires another project directory.
+
 The app ships both compatibility host modules beneath
 `/usr/share/deepseek-harness-native/compat/`. It launches the runtime's Node
 executable when present, otherwise an installed Node found at configuration time.
