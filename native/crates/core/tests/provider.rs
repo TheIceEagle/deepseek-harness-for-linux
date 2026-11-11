@@ -15,6 +15,7 @@ fn message() -> Message {
         content: "Hello, 🌊".into(),
         status: MessageStatus::Complete,
         created_at: 0,
+        tool_trace: Vec::new(),
     }
 }
 

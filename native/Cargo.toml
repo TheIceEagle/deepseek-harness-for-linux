@@ -1,10 +1,10 @@
 [workspace]
-members = ["crates/core", "crates/plugins", "crates/app"]
+members = ["crates/core", "crates/plugins", "crates/mcp", "crates/app"]
 default-members = ["crates/app"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 edition = "2021"
 rust-version = "1.93.1"
 license = "MIT"

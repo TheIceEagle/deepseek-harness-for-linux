@@ -1,4 +1,8 @@
-use crate::{CoreError, Message, MessageStatus, Role, Settings};
+use crate::tools::{recover_trace, validate_trace, MAX_TOOL_CALLS, MAX_TOOL_TEXT_BYTES};
+use crate::{
+    AgentEvent, CoreError, Message, MessageStatus, Role, Settings, ToolCall, ToolDefinition,
+    ToolRound,
+};
 use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -7,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use url::{Host, Url};
 
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
-const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,23 +52,89 @@ impl Provider {
         sender: mpsc::Sender<StreamEvent>,
         cancel: CancellationToken,
     ) -> Result<StreamOutcome, CoreError> {
+        let (events, mut receiver) = mpsc::channel(64);
+        let request_cancel = cancel.clone();
+        let request = async move {
+            self.stream_turn(
+                settings,
+                api_key,
+                messages,
+                &[],
+                &[],
+                &events,
+                &request_cancel,
+                MAX_RESPONSE_BYTES,
+            )
+            .await
+        };
+        let forward_cancel = cancel.clone();
+        let forward = async move {
+            loop {
+                let next = tokio::select! {
+                    biased;
+                    () = forward_cancel.cancelled() => break,
+                    event = receiver.recv() => event,
+                };
+                let Some(AgentEvent::Delta(text)) = next else {
+                    break;
+                };
+                tokio::select! {
+                    biased;
+                    () = forward_cancel.cancelled() => break,
+                    sent = sender.send(StreamEvent::Delta(text)) => {
+                        if sent.is_err() { forward_cancel.cancel(); break; }
+                    }
+                }
+            }
+        };
+        let (turn, ()) = tokio::join!(request, forward);
+        let turn = turn?;
+        Ok(if turn.cancelled || cancel.is_cancelled() {
+            StreamOutcome::Cancelled
+        } else {
+            StreamOutcome::Completed
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn stream_turn(
+        &self,
+        settings: &Settings,
+        api_key: &str,
+        messages: &[Message],
+        trace: &[ToolRound],
+        tools: &[ToolDefinition],
+        sender: &mpsc::Sender<AgentEvent>,
+        cancel: &CancellationToken,
+        visible_budget: usize,
+    ) -> Result<ProviderTurn, CoreError> {
+        let mut turn = ProviderTurn::default();
         if cancel.is_cancelled() {
-            return Ok(StreamOutcome::Cancelled);
+            turn.cancelled = true;
+            return Ok(turn);
         }
         settings.validate()?;
         let endpoint = completion_url(&settings.base_url)?;
+        validate_deepseek_history(&endpoint, messages, !tools.is_empty())?;
         let mut wire_messages = Vec::with_capacity(messages.len() + 1);
         if !settings.system_prompt.trim().is_empty() {
             wire_messages.push(json!({ "role": "system", "content": settings.system_prompt }));
         }
         for message in messages {
-            if message.content.is_empty()
-                || (message.role == Role::Assistant && message.status == MessageStatus::Error)
+            if message.role == Role::Assistant && !message.tool_trace.is_empty() {
+                append_trace(
+                    &mut wire_messages,
+                    &message.tool_trace,
+                    message.status == MessageStatus::Complete,
+                )?;
+            } else if !(message.content.is_empty()
+                || message.role == Role::Assistant && message.status == MessageStatus::Error)
             {
-                continue;
+                let wire = json!({ "role": message.role, "content": message.content });
+                wire_messages.push(wire);
             }
-            wire_messages.push(json!({ "role": message.role, "content": message.content }));
         }
+        append_trace(&mut wire_messages, trace, true)?;
         if !wire_messages
             .iter()
             .any(|message| message["role"] == "user")
@@ -73,12 +143,14 @@ impl Provider {
                 "Write a message before starting a response.",
             ));
         }
-        let body = serde_json::to_vec(&json!({
-            "model": settings.model.trim(),
-            "messages": wire_messages,
-            "stream": true,
-        }))
-        .map_err(|_| {
+        let mut body =
+            json!({"model": settings.model.trim(), "messages": wire_messages, "stream": true});
+        if !tools.is_empty() {
+            body["tools"] = tools.iter().map(|tool| json!({
+                "type": "function", "function": {"name": tool.name, "description": tool.description, "parameters": tool.input_schema}
+            })).collect();
+        }
+        let body = serde_json::to_vec(&body).map_err(|_| {
             CoreError::new("The conversation could not be prepared. Try a new conversation.")
         })?;
         if body.len() > MAX_REQUEST_BYTES {
@@ -104,7 +176,7 @@ impl Provider {
         }
         let mut response = tokio::select! {
             biased;
-            () = cancel.cancelled() => return Ok(StreamOutcome::Cancelled),
+            () = cancel.cancelled() => {turn.cancelled = true; return Ok(turn);},
             response = request.send() => response.map_err(|_| connection_error())?,
         };
         if !response.status().is_success() {
@@ -125,19 +197,17 @@ impl Provider {
         }
         let mut parser = EventParser::default();
         let mut output_bytes = 0usize;
-        let mut saw_finish = false;
-        let mut saw_content = false;
+        let mut finish: Option<String> = None;
+        let mut fragments: Vec<CallFragments> = Vec::new();
         loop {
             let next = tokio::select! {
                 biased;
-                () = cancel.cancelled() => return Ok(StreamOutcome::Cancelled),
+                () = cancel.cancelled() => {turn.cancelled = true; return Ok(turn);},
                 chunk = response.chunk() => chunk.map_err(|_| stream_error())?,
             };
             let Some(chunk) = next else {
-                // A finished choice is sufficient for compatible servers which
-                // close the stream without the optional [DONE] sentinel.
-                if saw_finish && saw_content {
-                    return Ok(StreamOutcome::Completed);
+                if finish.is_some() {
+                    return finalize(turn, fragments, finish.as_deref(), tools);
                 }
                 return Err(stream_error());
             };
@@ -146,10 +216,7 @@ impl Provider {
                     continue;
                 }
                 if event.trim() == "[DONE]" {
-                    if saw_content {
-                        return Ok(StreamOutcome::Completed);
-                    }
-                    return Err(CoreError::new("The provider returned an empty response. Try again or choose another model."));
+                    return finalize(turn, fragments, finish.as_deref(), tools);
                 }
                 let item: Value = serde_json::from_str(&event).map_err(|_| protocol_error())?;
                 if item.get("error").is_some_and(|error| !error.is_null()) {
@@ -159,42 +226,245 @@ impl Provider {
                     .get("choices")
                     .and_then(Value::as_array)
                     .ok_or_else(protocol_error)?;
-                // Usage-only chunks have an empty choices array.
                 let Some(choice) = choices.first() else {
                     continue;
                 };
-                if let Some(content) = choice
-                    .get("delta")
-                    .and_then(|delta| delta.get("content"))
-                    .and_then(Value::as_str)
-                {
-                    if !content.is_empty() {
-                        output_bytes = output_bytes.saturating_add(content.len());
-                        if output_bytes > MAX_RESPONSE_BYTES {
-                            return Err(CoreError::new("The response exceeded the native client's current size limit. The partial response has been kept."));
+                let delta = choice.get("delta").ok_or_else(protocol_error)?;
+                if !delta.is_object() {
+                    return Err(protocol_error());
+                }
+                if finish.is_some() && delta.as_object().is_some_and(|fields| !fields.is_empty()) {
+                    return Err(protocol_error());
+                }
+                for field in ["content", "reasoning_content"] {
+                    if let Some(value) = delta.get(field).filter(|value| !value.is_null()) {
+                        let text = value.as_str().ok_or_else(protocol_error)?;
+                        count_output(&mut output_bytes, text.len())?;
+                        if field == "content" {
+                            if turn.round.content.len().saturating_add(text.len()) > visible_budget
+                            {
+                                return Err(CoreError::new("The response exceeded the native client's current size limit. The partial response has been kept."));
+                            }
+                            turn.round.content.push_str(text);
+                            if !text.is_empty()
+                                && !crate::agent::emit(
+                                    sender,
+                                    AgentEvent::Delta(text.to_owned()),
+                                    cancel,
+                                )
+                                .await
+                            {
+                                turn.cancelled = true;
+                                return Ok(turn);
+                            }
+                        } else {
+                            turn.round.reasoning_content.push_str(text);
                         }
-                        saw_content = true;
-                        tokio::select! {
-                            biased;
-                            () = cancel.cancelled() => return Ok(StreamOutcome::Cancelled),
-                            sent = sender.send(StreamEvent::Delta(content.to_owned())) => {
-                                if sent.is_err() { return Ok(StreamOutcome::Cancelled); }
+                    }
+                }
+                if let Some(calls) = delta.get("tool_calls").filter(|value| !value.is_null()) {
+                    for call in calls.as_array().ok_or_else(protocol_error)? {
+                        let index = call
+                            .get("index")
+                            .and_then(Value::as_u64)
+                            .ok_or_else(protocol_error)?;
+                        if index >= MAX_TOOL_CALLS as u64 {
+                            return Err(tool_error());
+                        }
+                        let index = index as usize;
+                        fragments
+                            .resize_with(fragments.len().max(index + 1), CallFragments::default);
+                        let target = &mut fragments[index];
+                        if call
+                            .get("type")
+                            .is_some_and(|value| value.as_str() != Some("function"))
+                        {
+                            return Err(tool_error());
+                        }
+                        if let Some(id) = call.get("id") {
+                            append_fragment(&mut target.id, id, 256, &mut output_bytes)?;
+                        }
+                        if let Some(function) = call.get("function") {
+                            if !function.is_object() {
+                                return Err(tool_error());
+                            }
+                            if let Some(name) = function.get("name") {
+                                append_fragment(&mut target.name, name, 64, &mut output_bytes)?;
+                            }
+                            if let Some(arguments) = function.get("arguments") {
+                                append_fragment(
+                                    &mut target.arguments,
+                                    arguments,
+                                    MAX_TOOL_TEXT_BYTES,
+                                    &mut output_bytes,
+                                )?;
                             }
                         }
                     }
                 }
-                if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+                if let Some(reason) = choice.get("finish_reason").filter(|value| !value.is_null()) {
+                    let reason = reason.as_str().ok_or_else(protocol_error)?;
+                    if finish.is_some() {
+                        return Err(protocol_error());
+                    }
                     match reason {
-                        "stop" => saw_finish = true,
+                        "stop" | "tool_calls" => finish = Some(reason.to_owned()),
                         "length" => return Err(CoreError::new("The response reached the provider's length limit. The partial response has been kept.")),
                         "content_filter" => return Err(CoreError::new("The provider stopped this response under its content policy.")),
-                        "tool_calls" => return Err(CoreError::new("This response requested a model tool call. Automatic agent tool calls are not available in this native preview.")),
                         _ => return Err(CoreError::new("The provider interrupted this response. The partial response has been kept.")),
                     }
                 }
             }
         }
     }
+}
+
+#[derive(Default)]
+pub(crate) struct ProviderTurn {
+    pub(crate) round: ToolRound,
+    pub(crate) cancelled: bool,
+}
+
+#[derive(Default)]
+struct CallFragments {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+fn count_output(count: &mut usize, bytes: usize) -> Result<(), CoreError> {
+    *count = count.saturating_add(bytes);
+    if *count > MAX_RESPONSE_BYTES {
+        return Err(CoreError::new("The response exceeded the native client's current size limit. The partial response has been kept."));
+    }
+    Ok(())
+}
+
+fn append_fragment(
+    output: &mut String,
+    fragment: &Value,
+    limit: usize,
+    count: &mut usize,
+) -> Result<(), CoreError> {
+    let fragment = fragment.as_str().ok_or_else(tool_error)?;
+    if output.len().saturating_add(fragment.len()) > limit {
+        return Err(tool_error());
+    }
+    count_output(count, fragment.len())?;
+    output.push_str(fragment);
+    Ok(())
+}
+
+fn finalize(
+    mut turn: ProviderTurn,
+    fragments: Vec<CallFragments>,
+    finish: Option<&str>,
+    tools: &[ToolDefinition],
+) -> Result<ProviderTurn, CoreError> {
+    if !fragments.is_empty() {
+        if finish != Some("tool_calls") {
+            return Err(tool_error());
+        }
+        let mut ids = std::collections::HashSet::new();
+        for fragment in fragments {
+            if fragment.id.is_empty()
+                || !ids.insert(fragment.id.clone())
+                || !tools.iter().any(|tool| tool.name == fragment.name)
+            {
+                return Err(tool_error());
+            }
+            let arguments: Value =
+                serde_json::from_str(&fragment.arguments).map_err(|_| tool_error())?;
+            if !arguments.is_object() {
+                return Err(tool_error());
+            }
+            turn.round.tool_calls.push(ToolCall {
+                id: fragment.id,
+                name: fragment.name,
+                arguments,
+            });
+        }
+    } else if finish == Some("tool_calls") {
+        return Err(tool_error());
+    } else if turn.round.content.is_empty() {
+        return Err(CoreError::new(
+            "The provider returned an empty response. Try again or choose another model.",
+        ));
+    }
+    Ok(turn)
+}
+
+fn append_trace(
+    wire: &mut Vec<Value>,
+    trace: &[ToolRound],
+    include_terminal: bool,
+) -> Result<(), CoreError> {
+    validate_trace(trace)?;
+    let mut trace = trace.to_vec();
+    recover_trace(&mut trace);
+    for round in trace {
+        // Retry continues from recorded tool outcomes, not an unfinished answer.
+        if !include_terminal && round.tool_calls.is_empty() {
+            continue;
+        }
+        let mut assistant = json!({"role": "assistant", "content": round.content});
+        if !round.reasoning_content.is_empty() {
+            assistant["reasoning_content"] = round.reasoning_content.into();
+        }
+        if !round.tool_calls.is_empty() {
+            assistant["tool_calls"] = round.tool_calls.iter().map(|call| json!({
+                "id": call.id, "type": "function", "function": {"name": call.name, "arguments": call.arguments.to_string()}
+            })).collect();
+        }
+        wire.push(assistant);
+        for call in round.tool_calls {
+            let result = round
+                .results
+                .iter()
+                .find(|result| result.tool_call_id == call.id)
+                .expect("recovered result");
+            let content = if result.is_error {
+                json!({"error": result.content}).to_string()
+            } else {
+                result.content.clone()
+            };
+            wire.push(json!({"role": "tool", "tool_call_id": call.id, "content": content}));
+        }
+    }
+    Ok(())
+}
+
+fn tool_error() -> CoreError {
+    CoreError::new("The provider returned an invalid or unavailable tool request. No tool from that response was executed.")
+}
+
+fn validate_deepseek_history(
+    endpoint: &Url,
+    messages: &[Message],
+    using_tools: bool,
+) -> Result<(), CoreError> {
+    if !using_tools || endpoint.host_str() != Some("api.deepseek.com") {
+        return Ok(());
+    }
+    let missing = messages.iter().any(|message| {
+        if message.role != Role::Assistant {
+            return false;
+        }
+        if message.tool_trace.is_empty() {
+            return !message.content.is_empty() && message.status != MessageStatus::Error;
+        }
+        message
+            .tool_trace
+            .iter()
+            .filter(|round| {
+                message.status == MessageStatus::Complete || !round.tool_calls.is_empty()
+            })
+            .any(|round| round.reasoning_content.is_empty())
+    });
+    if missing {
+        return Err(CoreError::new("This older conversation lacks the reasoning required for DeepSeek tools. Start a new conversation or disconnect tools."));
+    }
+    Ok(())
 }
 
 pub(crate) fn completion_url(base_url: &str) -> Result<Url, CoreError> {
@@ -353,6 +623,53 @@ mod tests {
             let error = completion_url(value).unwrap_err().to_string();
             assert!(!error.contains("secret"));
             assert!(!error.contains(value));
+        }
+    }
+
+    #[test]
+    fn deepseek_tools_reject_legacy_reasoning_gaps_before_any_http_request() {
+        let deepseek = completion_url("https://api.deepseek.com").unwrap();
+        let other = completion_url("https://compatible.example.test").unwrap();
+        let mut answer = Message {
+            id: "legacy".into(),
+            role: Role::Assistant,
+            content: "Previous answer".into(),
+            status: MessageStatus::Complete,
+            created_at: 0,
+            tool_trace: vec![],
+        };
+        let error = validate_deepseek_history(&deepseek, &[answer.clone()], true).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Start a new conversation or disconnect tools"));
+        assert!(validate_deepseek_history(&deepseek, &[answer.clone()], false).is_ok());
+        assert!(validate_deepseek_history(&other, &[answer.clone()], true).is_ok());
+        answer.tool_trace.push(ToolRound {
+            content: "Previous answer".into(),
+            reasoning_content: "Actual retained reasoning".into(),
+            ..ToolRound::default()
+        });
+        assert!(validate_deepseek_history(&deepseek, &[answer.clone()], true).is_ok());
+        answer.tool_trace[0].reasoning_content.clear();
+        assert!(validate_deepseek_history(&deepseek, &[answer], true).is_err());
+    }
+
+    #[test]
+    fn empty_reply_placeholders_and_omitted_failed_plain_answers_do_not_block_tools() {
+        let endpoint = completion_url("https://api.deepseek.com").unwrap();
+        for (content, status) in [
+            ("", MessageStatus::Streaming),
+            ("failed partial", MessageStatus::Error),
+        ] {
+            let message = Message {
+                id: "partial".into(),
+                role: Role::Assistant,
+                content: content.into(),
+                status,
+                created_at: 0,
+                tool_trace: vec![],
+            };
+            assert!(validate_deepseek_history(&endpoint, &[message], true).is_ok());
         }
     }
 }

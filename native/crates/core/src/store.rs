@@ -1,4 +1,5 @@
-use crate::CoreError;
+use crate::tools::{recover_trace, validate_trace};
+use crate::{CoreError, ToolRound};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -70,6 +71,8 @@ pub struct Message {
     pub content: String,
     pub status: MessageStatus,
     pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_trace: Vec<ToolRound>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -129,7 +132,7 @@ impl Store {
                     return Err(read_error());
                 }
                 let state: State = serde_json::from_slice(&bytes).map_err(|_| read_error())?;
-                if state.version != 1 {
+                if !matches!(state.version, 1 | 2) {
                     return Err(CoreError::new("This native profile version is unsupported. Open it with a matching app version."));
                 }
                 state.settings.validate()?;
@@ -145,6 +148,16 @@ impl Store {
         let mut recovered = false;
         for session in &mut state.sessions {
             for message in &mut session.messages {
+                validate_message(&message.content)?;
+                validate_trace(&message.tool_trace)?;
+                if !message.tool_trace.is_empty() && state.version == 1 {
+                    state.version = 2;
+                    recovered = true;
+                }
+                if recover_trace(&mut message.tool_trace) {
+                    message.status = MessageStatus::Interrupted;
+                    recovered = true;
+                }
                 if message.status == MessageStatus::Streaming {
                     message.status = MessageStatus::Interrupted;
                     recovered = true;
@@ -229,6 +242,7 @@ impl Store {
                 content,
                 status,
                 created_at: now(),
+                tool_trace: Vec::new(),
             });
             session.updated_at = now();
             state
@@ -294,6 +308,7 @@ impl Store {
                 content: input,
                 status: MessageStatus::Complete,
                 created_at: timestamp,
+                tool_trace: Vec::new(),
             });
             session.messages.push(Message {
                 id: Uuid::new_v4().to_string(),
@@ -301,6 +316,7 @@ impl Store {
                 content: String::new(),
                 status: MessageStatus::Streaming,
                 created_at: timestamp,
+                tool_trace: Vec::new(),
             });
             session.draft.clear();
             session.updated_at = timestamp;
@@ -332,12 +348,56 @@ impl Store {
         })
     }
 
+    /// Saves the visible reply and canonical tool transcript in one transaction.
+    /// Tool plans are allowed only while streaming. A stopped/failed turn records
+    /// unknown outcomes rather than replaying unfinished external actions.
+    pub fn replace_last_agent(
+        &mut self,
+        session_id: &str,
+        content: impl Into<String>,
+        status: MessageStatus,
+        mut trace: Vec<ToolRound>,
+    ) -> Result<(), CoreError> {
+        let content = content.into();
+        validate_message(&content)?;
+        validate_trace(&trace)?;
+        if status == MessageStatus::Complete
+            && (trace
+                .iter()
+                .any(|round| round.results.len() != round.tool_calls.len())
+                || trace
+                    .last()
+                    .is_some_and(|round| !round.tool_calls.is_empty()))
+        {
+            return Err(CoreError::new("The tool conversation has an unconfirmed result. Save it as interrupted and review the action before continuing."));
+        }
+        if status != MessageStatus::Streaming {
+            recover_trace(&mut trace);
+        }
+        self.change(|state| {
+            let session = state.sessions.iter_mut().find(|session| session.id == session_id)
+                .ok_or_else(session_error)?;
+            let message = session.messages.last_mut().filter(|message| message.role == Role::Assistant)
+                .ok_or_else(|| CoreError::new("The assistant response cannot be updated. Reopen the conversation and try again."))?;
+            message.content = content;
+            message.status = status;
+            message.tool_trace = trace;
+            if !message.tool_trace.is_empty() { state.version = 2; }
+            session.updated_at = now();
+            state.sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
+            Ok(())
+        })
+    }
+
     fn change(
         &mut self,
         update: impl FnOnce(&mut State) -> Result<(), CoreError>,
     ) -> Result<(), CoreError> {
         let previous = self.state.clone();
-        update(&mut self.state)?;
+        if let Err(error) = update(&mut self.state) {
+            self.state = previous;
+            return Err(error);
+        }
         if let Err(error) = self.persist() {
             self.state = previous;
             return Err(error);
